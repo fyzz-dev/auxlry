@@ -127,15 +127,10 @@ async fn authenticate(conn: &Connection, db: &Database) -> Result<String> {
             Ok(node_name)
         }
         ProtocolMessage::TokenAuth { token } => {
-            // Find which node this token belongs to
-            // We'll check all stored tokens (simple approach for now)
-            let node_name = format!("node-token-{}", &token[..8.min(token.len())]);
+            // Look up which node owns this token
+            let node_name = db.find_node_by_token(&token).await.unwrap_or(None);
 
-            let valid = linking::verify_token(db, &node_name, &token)
-                .await
-                .unwrap_or(false);
-
-            if valid {
+            if let Some(node_name) = node_name {
                 send_message(
                     &mut send,
                     &ProtocolMessage::TokenAuthResponse { success: true },

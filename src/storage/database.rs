@@ -148,6 +148,15 @@ impl Database {
         Ok(row.map(|r| r.get("token")))
     }
 
+    /// Find the node name that owns a given token.
+    pub async fn find_node_by_token(&self, token: &str) -> Result<Option<String>> {
+        let row = sqlx::query("SELECT node_name FROM node_tokens WHERE token = ?")
+            .bind(token)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| r.get("node_name")))
+    }
+
     /// Query recent messages for a given interface+channel, oldest first.
     pub async fn get_recent_messages(
         &self,
