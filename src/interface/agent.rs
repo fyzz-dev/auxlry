@@ -7,10 +7,11 @@ use rig::providers::openrouter;
 use tracing::{error, info, warn};
 
 use crate::adapters::Adapter;
+use crate::core::signal::AgentSignal;
 use crate::core::state::AppState;
 use crate::events::types::{Event, EventPayload};
 use crate::interface::router::PromptRouter;
-use crate::interface::session::{BatchedInput, PendingMessage};
+use crate::interface::session::BatchedInput;
 use crate::interface::tools::{
     DelegateOperatorTool, DelegationContext, DelegateSynapseTool,
 };
@@ -197,10 +198,8 @@ impl InterfaceAgent {
 
     /// Run the interface loop: consume batched inputs, produce events.
     ///
-    /// Batching only happens while the LLM is actively generating. Messages
-    /// that arrive during generation for the same channel are collected and
-    /// incorporated into a single re-generated reply. Messages for other
-    /// channels are deferred and processed next.
+    /// Uses `tokio::select!` to detect same-channel messages arriving during
+    /// generation and steer the active agent in real-time.
     pub async fn run(
         self,
         mut batch_rx: tokio::sync::mpsc::Receiver<BatchedInput>,
@@ -228,34 +227,47 @@ impl InterfaceAgent {
             // Start typing indicator while we process.
             let typing = TypingHandle::start(&adapters, &interface_name, &channel);
 
-            let result = self.process_batch(&batch, &adapters).await;
+            let process_fut = self.process_batch(&batch, &adapters);
+            tokio::pin!(process_fut);
 
-            // Drain any batches that queued up during generation.
-            let mut extra_same_channel: Vec<PendingMessage> = Vec::new();
-            while let Ok(additional) = batch_rx.try_recv() {
-                if additional.channel == channel && additional.interface == interface_name {
-                    extra_same_channel.extend(additional.messages);
-                } else {
-                    deferred.push(additional);
+            let result = loop {
+                tokio::select! {
+                    result = &mut process_fut => break result,
+                    Some(additional) = batch_rx.recv() => {
+                        if additional.channel == channel && additional.interface == interface_name {
+                            // Try to steer the active agent for this channel
+                            let msg: String = additional
+                                .messages
+                                .iter()
+                                .map(|m| format!("{}: {}", m.author, m.content))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            let steered = self
+                                .state
+                                .active_agents
+                                .signal_channel(
+                                    &interface_name,
+                                    &channel,
+                                    AgentSignal::Steer(msg),
+                                )
+                                .await;
+                            if steered.is_err() {
+                                // No active sub-agent yet (interface still thinking) → defer
+                                deferred.push(additional);
+                            }
+                        } else {
+                            deferred.push(additional);
+                        }
+                    }
                 }
-            }
-
-            // If same-channel messages arrived mid-generation, re-generate once
-            // with everything combined so the reply covers all input.
-            let final_result = if !extra_same_channel.is_empty() {
-                info!(
-                    channel = %channel,
-                    extra = extra_same_channel.len(),
-                    "messages arrived during generation, re-processing"
-                );
-                let mut combined = batch;
-                combined.messages.extend(extra_same_channel);
-                self.process_batch(&combined, &adapters).await
-            } else {
-                result
             };
 
-            match final_result {
+            // Drain any remaining batches that queued up.
+            while let Ok(additional) = batch_rx.try_recv() {
+                deferred.push(additional);
+            }
+
+            match result {
                 Ok(response) => {
                     self.send_response(&adapters, &interface_name, &channel, &response)
                         .await;

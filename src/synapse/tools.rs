@@ -67,7 +67,7 @@ impl Tool for DelegateOperatorTool {
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         self.operator
-            .run(&args.task, args.node.as_deref())
+            .run(&args.task, args.node.as_deref(), None, None)
             .await
             .map_err(|e| SynapseToolError(e.to_string()))
     }

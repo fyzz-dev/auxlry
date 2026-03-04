@@ -108,6 +108,18 @@ pub enum EventPayload {
         node: String,
     },
 
+    // Agent intervention
+    AgentInterrupted {
+        agent_id: String,
+        kind: crate::core::signal::AgentKind,
+        partial_result: String,
+    },
+    AgentSteered {
+        agent_id: String,
+        kind: crate::core::signal::AgentKind,
+        message: String,
+    },
+
     // Memory
     MemoryStored {
         key: String,
@@ -142,6 +154,8 @@ impl EventPayload {
             Self::OperatorFailed { .. } => "operator_failed",
             Self::NodeConnected { .. } => "node_connected",
             Self::NodeDisconnected { .. } => "node_disconnected",
+            Self::AgentInterrupted { .. } => "agent_interrupted",
+            Self::AgentSteered { .. } => "agent_steered",
             Self::MemoryStored { .. } => "memory_stored",
         }
     }

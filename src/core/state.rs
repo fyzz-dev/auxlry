@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::config::types::Config;
+use crate::core::signal::ActiveAgents;
 use crate::events::bus::EventBus;
 use crate::memory::store::MemoryStore;
 use crate::node::registry::NodeRegistry;
@@ -16,6 +17,7 @@ pub struct AppState {
     pub paths: AuxlryPaths,
     pub memory: Option<Arc<MemoryStore>>,
     pub nodes: NodeRegistry,
+    pub active_agents: ActiveAgents,
 }
 
 impl AppState {
@@ -34,6 +36,7 @@ impl AppState {
             paths,
             memory,
             nodes,
+            active_agents: ActiveAgents::new(),
         }
     }
 }

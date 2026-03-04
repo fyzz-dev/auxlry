@@ -137,7 +137,13 @@ impl Tool for DelegateSynapseTool {
         };
 
         self.synapse
-            .run(&args.task, memory_ctx.as_deref(), conversation.as_deref())
+            .run(
+                &args.task,
+                memory_ctx.as_deref(),
+                conversation.as_deref(),
+                Some(&self.ctx.interface_name),
+                Some(&self.ctx.channel),
+            )
             .await
             .map_err(|e| InterfaceToolError(e.to_string()))
     }
@@ -207,7 +213,12 @@ impl Tool for DelegateOperatorTool {
         self.ctx.send_ack(&args.ack).await;
 
         self.operator
-            .run(&args.task, args.node.as_deref())
+            .run(
+                &args.task,
+                args.node.as_deref(),
+                Some(&self.ctx.interface_name),
+                Some(&self.ctx.channel),
+            )
             .await
             .map_err(|e| InterfaceToolError(e.to_string()))
     }

@@ -79,12 +79,12 @@ open http://localhost:8400/swagger-ui/
 ┌─────────────────────────────────────────────────────────────┐
 │                        CORE DAEMON                          │
 │                                                             │
-│  Event Bus ──▶ SQLite DB          REST API (axum)            │
-│      │                            /api/health /api/events    │
+│  Event Bus ──▶ SQLite DB          REST API (axum)           │
+│      │                            /api/health /api/events   │
 │      │                                                      │
 │  Interface Agent                                            │
 │    messages in → batch → LLM → reply / delegate             │
-│      │              │              │                         │
+│      │              │              │                        │
 │  Adapters       Synapse          Operator                   │
 │  (Discord)     (Thinker)        (Actor)                     │
 │                                    │                        │
@@ -93,11 +93,11 @@ open http://localhost:8400/swagger-ui/
 └─────────────────────────────────────────────────────────────┘
 ```
 
-| Agent | Role | Memory Access |
-|-------|------|---------------|
-| **Interface** | Routes messages, delegates tasks | Auto-searches for context |
-| **Synapse** | Reasoning, planning, analysis | Full read/write + graph edges |
-| **Operator** | Executes file/shell operations on nodes | Read-only search |
+| Agent         | Role                                    | Memory Access                 |
+| ------------- | --------------------------------------- | ----------------------------- |
+| **Interface** | Routes messages, delegates tasks        | Auto-searches for context     |
+| **Synapse**   | Reasoning, planning, analysis           | Full read/write + graph edges |
+| **Operator**  | Executes file/shell operations on nodes | Read-only search              |
 
 ## CLI Reference
 
@@ -134,19 +134,19 @@ The name you provide during `node link` is how the node appears in the registry 
 
 ## API Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/health` | Health check |
-| GET | `/api/events` | SSE event stream |
-| GET | `/api/events/recent` | Last 50 persisted events |
-| GET | `/api/status` | System overview |
-| GET | `/api/config` | Current config (secrets redacted) |
-| GET | `/api/memories/search?q=...` | Hybrid memory search |
-| POST | `/api/memories` | Store a memory |
-| POST | `/api/memories/edges` | Create a graph edge |
-| GET | `/api/memories/{id}/edges` | Get edges for a memory |
-| GET | `/api/memories/graph` | Memory knowledge graph |
-| GET | `/swagger-ui/` | Interactive API docs |
+| Method | Path                         | Description                       |
+| ------ | ---------------------------- | --------------------------------- |
+| GET    | `/api/health`                | Health check                      |
+| GET    | `/api/events`                | SSE event stream                  |
+| GET    | `/api/events/recent`         | Last 50 persisted events          |
+| GET    | `/api/status`                | System overview                   |
+| GET    | `/api/config`                | Current config (secrets redacted) |
+| GET    | `/api/memories/search?q=...` | Hybrid memory search              |
+| POST   | `/api/memories`              | Store a memory                    |
+| POST   | `/api/memories/edges`        | Create a graph edge               |
+| GET    | `/api/memories/{id}/edges`   | Get edges for a memory            |
+| GET    | `/api/memories/graph`        | Memory knowledge graph            |
+| GET    | `/swagger-ui/`               | Interactive API docs              |
 
 ## Configuration
 
@@ -168,17 +168,17 @@ interfaces:
 
 ## Tech Stack
 
-| Component | Crate | Purpose |
-|-----------|-------|---------|
-| Runtime | `tokio` | Async runtime |
-| LLM | `rig-core` | OpenRouter / multi-provider |
-| API | `axum` + `utoipa` | REST, SSE, Swagger UI |
-| Database | `sqlx` (SQLite) | Events, messages, tokens |
-| Discord | `serenity` | Gateway + HTTP |
-| Transport | `quinn` + `bincode` | QUIC with binary serialization |
-| Embeddings | `fastembed` | Local ONNX inference |
-| Vectors | `lancedb` | Columnar vector store |
-| Templates | `minijinja` | Agent prompt templates |
+| Component  | Crate               | Purpose                        |
+| ---------- | ------------------- | ------------------------------ |
+| Runtime    | `tokio`             | Async runtime                  |
+| LLM        | `rig-core`          | OpenRouter / multi-provider    |
+| API        | `axum` + `utoipa`   | REST, SSE, Swagger UI          |
+| Database   | `sqlx` (SQLite)     | Events, messages, tokens       |
+| Discord    | `serenity`          | Gateway + HTTP                 |
+| Transport  | `quinn` + `bincode` | QUIC with binary serialization |
+| Embeddings | `fastembed`         | Local ONNX inference           |
+| Vectors    | `lancedb`           | Columnar vector store          |
+| Templates  | `minijinja`         | Agent prompt templates         |
 
 ## Development
 

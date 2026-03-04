@@ -20,6 +20,7 @@ use tokio_stream::StreamExt;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
+use crate::core::signal::AgentSignal;
 use crate::core::state::AppState;
 
 #[derive(Embed)]
@@ -48,7 +49,10 @@ pub fn router(state: AppState) -> Router {
         .route("/memories", post(memory_store))
         .route("/memories/edges", post(memory_create_edge))
         .route("/memories/{id}/edges", get(memory_get_edges))
-        .route("/memories/graph", get(memories_graph));
+        .route("/memories/graph", get(memories_graph))
+        .route("/agents/active", get(active_agents))
+        .route("/agents/{id}/wrap-up", post(agent_wrap_up))
+        .route("/agents/{id}/steer", post(agent_steer));
 
     Router::new()
         .nest("/api", api)
@@ -452,6 +456,48 @@ async fn memory_get_edges(
     match state.db.edges_for(&id).await {
         Ok(edges) => Json(json!({"edges": edges})),
         Err(e) => Json(json!({"error": e.to_string()})),
+    }
+}
+
+// ─── Agent intervention endpoints ───
+
+/// List currently active agents.
+async fn active_agents(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let agents = state.active_agents.list().await;
+    Json(json!({"agents": agents}))
+}
+
+/// Wrap up (gracefully terminate) an active agent.
+async fn agent_wrap_up(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match state.active_agents.signal(&id, AgentSignal::WrapUp).await {
+        Ok(()) => (StatusCode::OK, Json(json!({"signaled": true, "action": "wrap-up"}))),
+        Err(e) => (StatusCode::NOT_FOUND, Json(json!({"error": e.to_string()}))),
+    }
+}
+
+#[derive(Deserialize)]
+struct SteerRequest {
+    message: String,
+}
+
+/// Steer an active agent by injecting additional context.
+async fn agent_steer(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<SteerRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match state
+        .active_agents
+        .signal(&id, AgentSignal::Steer(body.message))
+        .await
+    {
+        Ok(()) => (StatusCode::OK, Json(json!({"signaled": true, "action": "steer"}))),
+        Err(e) => (StatusCode::NOT_FOUND, Json(json!({"error": e.to_string()}))),
     }
 }
 
