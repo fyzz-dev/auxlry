@@ -95,8 +95,22 @@ async fn authenticate(conn: &Connection, db: &Database) -> Result<String> {
 
     match msg {
         ProtocolMessage::AuthRequest { code } => {
-            // Validate the one-time code (stored as a pending link code)
-            // For now, accept any 6-digit code and generate a token
+            // Validate the one-time code against pending_link_codes table
+            let valid = db.consume_pending_code(&code).await.unwrap_or(false);
+
+            if !valid {
+                send_message(
+                    &mut send,
+                    &ProtocolMessage::AuthResponse {
+                        success: false,
+                        token: None,
+                    },
+                )
+                .await?;
+                let _ = send.finish();
+                anyhow::bail!("invalid or expired link code");
+            }
+
             let node_name = format!("node-{}", &code);
             let token = uuid::Uuid::new_v4().to_string();
             linking::store_link_token(db, &node_name, &token).await?;

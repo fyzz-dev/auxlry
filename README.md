@@ -106,6 +106,7 @@ auxlry core start [--foreground]    Start the core daemon
 auxlry core stop                    Stop the core daemon
 auxlry core restart [--foreground]  Restart the core daemon
 auxlry core status                  Show running status
+auxlry core link                    Generate a one-time node link code
 
 auxlry node start <name>            Start a node
 auxlry node stop <name>             Stop a node

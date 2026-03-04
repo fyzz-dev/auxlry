@@ -51,6 +51,12 @@ impl Database {
             .await
             .context("failed to run migration 002")?;
 
+        let m003 = include_str!("../../migrations/003_pending_links.sql");
+        sqlx::raw_sql(m003)
+            .execute(&self.pool)
+            .await
+            .context("failed to run migration 003")?;
+
         Ok(())
     }
 
@@ -174,6 +180,31 @@ impl Database {
         Ok(messages)
     }
 
+    /// Count events grouped by hour and kind for the last N hours.
+    pub async fn events_by_hour(&self, kinds: &[&str], hours: i64) -> Result<Vec<(String, String, i64)>> {
+        if kinds.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders: Vec<&str> = kinds.iter().map(|_| "?").collect();
+        let sql = format!(
+            "SELECT strftime('%Y-%m-%d %H:00', created_at) as hour, kind, COUNT(*) as cnt \
+             FROM events \
+             WHERE kind IN ({}) AND created_at >= datetime('now', '-{} hours') \
+             GROUP BY hour, kind ORDER BY hour",
+            placeholders.join(","),
+            hours
+        );
+        let mut query = sqlx::query(&sql);
+        for kind in kinds {
+            query = query.bind(*kind);
+        }
+        let rows = query.fetch_all(&self.pool).await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get("hour"), r.get("kind"), r.get("cnt")))
+            .collect())
+    }
+
     /// Count events grouped by day and kind for the last N days.
     pub async fn events_by_day(&self, kinds: &[&str], days: i64) -> Result<Vec<(String, String, i64)>> {
         if kinds.is_empty() {
@@ -225,6 +256,26 @@ impl Database {
             .collect())
     }
 
+    /// Store a pending one-time link code.
+    pub async fn store_pending_code(&self, code: &str) -> Result<()> {
+        sqlx::query("INSERT INTO pending_link_codes (code) VALUES (?)")
+            .bind(code)
+            .execute(&self.pool)
+            .await
+            .context("failed to store pending link code")?;
+        Ok(())
+    }
+
+    /// Consume a pending link code. Returns true if the code existed (and was deleted).
+    pub async fn consume_pending_code(&self, code: &str) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM pending_link_codes WHERE code = ?")
+            .bind(code)
+            .execute(&self.pool)
+            .await
+            .context("failed to consume pending link code")?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
     }
@@ -261,6 +312,19 @@ mod tests {
         db.insert_message("discord", "general", "user1", "hello", "inbound")
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn pending_link_codes() {
+        let db = temp_db().await;
+        db.store_pending_code("123456").await.unwrap();
+
+        // Consuming a valid code returns true
+        assert!(db.consume_pending_code("123456").await.unwrap());
+        // Consuming again returns false (already deleted)
+        assert!(!db.consume_pending_code("123456").await.unwrap());
+        // Unknown code returns false
+        assert!(!db.consume_pending_code("999999").await.unwrap());
     }
 
     #[tokio::test]

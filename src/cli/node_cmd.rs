@@ -16,11 +16,9 @@ pub async fn start(name: &str) -> Result<()> {
 
     let paths = AuxlryPaths::new()?;
 
-    // Load saved token from file
+    // Load saved token and core address from file
     let token = linking::read_token_file(&paths.token_file).await?;
-
-    // Read core address from config (default localhost:8401)
-    let core_addr = format!("127.0.0.1:8401");
+    let core_addr = linking::read_core_addr(&paths.core_addr_file).await?;
     let endpoint = quic::client_endpoint()?;
 
     let conn = endpoint
@@ -179,8 +177,9 @@ pub async fn link(core_addr: &str, code: &str) -> Result<()> {
             success: true,
             token: Some(token),
         } => {
-            // Save token to disk
+            // Save token and core address to disk
             linking::store_token_file(&paths.token_file, &token).await?;
+            linking::store_core_addr(&paths.core_addr_file, core_addr).await?;
             println!("linked successfully — token saved to {}", paths.token_file.display());
             Ok(())
         }

@@ -67,7 +67,11 @@ export function AgentActivityChart({ data }: Props) {
           dataKey="date"
           tickLine={false}
           axisLine={false}
-          tickFormatter={(v: string) => v.slice(5)}
+          tickFormatter={(v: string) => {
+            const d = new Date(v.replace(" ", "T"));
+            if (isNaN(d.getTime())) return v.slice(5);
+            return d.toLocaleDateString("en", { month: "short", day: "numeric" }) + " " + v.slice(11, 16);
+          }}
         />
         <YAxis tickLine={false} axisLine={false} allowDecimals={false} />
         <ChartTooltip content={<ChartTooltipContent />} />

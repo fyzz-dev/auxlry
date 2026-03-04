@@ -42,7 +42,12 @@ export function MemoryGrowthChart({ data }: Props) {
           dataKey="date"
           tickLine={false}
           axisLine={false}
-          tickFormatter={(v: string) => v.slice(5)}
+          tickFormatter={(v: string) => {
+            // "2026-03-04 14:00" → "Mar 4 14:00"
+            const d = new Date(v.replace(" ", "T"));
+            if (isNaN(d.getTime())) return v.slice(5);
+            return d.toLocaleDateString("en", { month: "short", day: "numeric" }) + " " + v.slice(11, 16);
+          }}
         />
         <YAxis
           tickLine={false}

@@ -50,3 +50,27 @@ pub async fn read_token_file(path: &Path) -> Result<String> {
     }
     Ok(token)
 }
+
+/// Store the core address to a file (node-side).
+pub async fn store_core_addr(path: &Path, addr: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .context("failed to create core addr directory")?;
+    }
+    tokio::fs::write(path, addr)
+        .await
+        .context("failed to write core addr file")
+}
+
+/// Read the core address from a file (node-side).
+pub async fn read_core_addr(path: &Path) -> Result<String> {
+    let contents = tokio::fs::read_to_string(path)
+        .await
+        .context("no core address found — run `auxlry node link` first")?;
+    let addr = contents.trim().to_string();
+    if addr.is_empty() {
+        anyhow::bail!("core addr file is empty — run `auxlry node link` first");
+    }
+    Ok(addr)
+}

@@ -70,10 +70,13 @@ impl super::Adapter for DiscordAdapter {
 
         let channel_id: u64 = channel.parse().context("invalid channel ID")?;
         let channel_id = ChannelId::new(channel_id);
-        channel_id
-            .send_message(http, CreateMessage::new().content(content))
-            .await
-            .context("failed to send Discord message")?;
+
+        for chunk in chunk_message(content, 2000) {
+            channel_id
+                .send_message(http, CreateMessage::new().content(chunk))
+                .await
+                .context("failed to send Discord message")?;
+        }
         Ok(())
     }
 
@@ -113,6 +116,34 @@ impl super::Adapter for DiscordAdapter {
     }
 }
 
+/// Split a message into chunks that fit within `max_len`, preferring newline boundaries.
+fn chunk_message(content: &str, max_len: usize) -> Vec<&str> {
+    if content.len() <= max_len {
+        return vec![content];
+    }
+
+    let mut chunks = Vec::new();
+    let mut remaining = content;
+
+    while !remaining.is_empty() {
+        if remaining.len() <= max_len {
+            chunks.push(remaining);
+            break;
+        }
+
+        // Find the last newline within the limit
+        let split_at = remaining[..max_len]
+            .rfind('\n')
+            .map(|i| i + 1) // include the newline in the current chunk
+            .unwrap_or(max_len); // no newline found, hard split
+
+        chunks.push(&remaining[..split_at]);
+        remaining = &remaining[split_at..];
+    }
+
+    chunks
+}
+
 struct DiscordHandler {
     bus: EventBus,
     interface_name: String,
@@ -147,5 +178,42 @@ impl EventHandler for DiscordHandler {
             author: msg.author.name.clone(),
             content: msg.content.clone(),
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chunk_short_message() {
+        let chunks = chunk_message("hello", 2000);
+        assert_eq!(chunks, vec!["hello"]);
+    }
+
+    #[test]
+    fn chunk_splits_on_newlines() {
+        let msg = format!("{}\n{}", "a".repeat(1500), "b".repeat(1000));
+        let chunks = chunk_message(&msg, 2000);
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].len() <= 2000);
+        assert!(chunks[1].len() <= 2000);
+        assert!(chunks[0].ends_with('\n'));
+    }
+
+    #[test]
+    fn chunk_hard_splits_without_newlines() {
+        let msg = "x".repeat(5000);
+        let chunks = chunk_message(&msg, 2000);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].len(), 2000);
+        assert_eq!(chunks[1].len(), 2000);
+        assert_eq!(chunks[2].len(), 1000);
+    }
+
+    #[test]
+    fn chunk_empty_message() {
+        let chunks = chunk_message("", 2000);
+        assert_eq!(chunks, vec![""]);
     }
 }

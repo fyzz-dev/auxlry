@@ -38,6 +38,8 @@ enum CoreAction {
     },
     /// Show core daemon status
     Status,
+    /// Generate a one-time link code for a remote node
+    Link,
 }
 
 #[derive(Subcommand)]
@@ -83,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
                 auxlry::cli::core_cmd::restart(foreground).await
             }
             CoreAction::Status => auxlry::cli::core_cmd::status().await,
+            CoreAction::Link => auxlry::cli::core_cmd::link().await,
         },
         Commands::Node { action } => match action {
             NodeAction::Start { name } => auxlry::cli::node_cmd::start(&name).await,

@@ -150,11 +150,11 @@ async fn dashboard_status(
 async fn dashboard_memory_actions(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    match state.db.events_by_day(&["memory_stored"], 30).await {
+    match state.db.events_by_hour(&["memory_stored"], 48).await {
         Ok(rows) => {
             let data: Vec<_> = rows
                 .iter()
-                .map(|(day, kind, count)| json!({"date": day, "kind": kind, "count": count}))
+                .map(|(hour, kind, count)| json!({"date": hour, "kind": kind, "count": count}))
                 .collect();
             Json(json!({"data": data}))
         }
@@ -167,13 +167,13 @@ async fn dashboard_agent_spawns(
 ) -> Json<serde_json::Value> {
     match state
         .db
-        .events_by_day(&["synapse_started", "operator_started"], 30)
+        .events_by_hour(&["synapse_started", "operator_started"], 48)
         .await
     {
         Ok(rows) => {
             let data: Vec<_> = rows
                 .iter()
-                .map(|(day, kind, count)| json!({"date": day, "kind": kind, "count": count}))
+                .map(|(hour, kind, count)| json!({"date": hour, "kind": kind, "count": count}))
                 .collect();
             Json(json!({"data": data}))
         }

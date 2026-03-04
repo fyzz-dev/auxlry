@@ -1,5 +1,8 @@
 use anyhow::{Context, Result, bail};
 
+use crate::config::loader::load_config;
+use crate::node::linking::generate_link_code;
+use crate::storage::database::Database;
 use crate::storage::paths::AuxlryPaths;
 
 /// Start the core daemon.
@@ -97,6 +100,46 @@ pub async fn restart(foreground: bool) -> Result<()> {
         }
     }
     start(foreground).await
+}
+
+/// Generate a one-time link code and print address + code.
+pub async fn link() -> Result<()> {
+    let paths = AuxlryPaths::new()?;
+
+    // Verify core is running
+    let pid = read_pid(&paths)?.context("core is not running — start it first")?;
+    if !is_process_running(pid) {
+        let _ = std::fs::remove_file(&paths.core_pid);
+        bail!("core is not running (stale PID file removed)");
+    }
+
+    // Open the same database the daemon uses
+    let db = Database::open(&paths.database.to_string_lossy()).await?;
+
+    // Generate and store one-time code
+    let code = generate_link_code();
+    db.store_pending_code(&code).await?;
+
+    // Read config to get quic_port
+    let config = load_config(&paths.config_file)?;
+    let quic_port = config.core.quic_port;
+
+    // Determine local IP (UDP socket trick — doesn't actually send anything)
+    let local_ip = get_local_ip().unwrap_or_else(|| "127.0.0.1".to_string());
+
+    println!("link code generated — give this to the remote node:\n");
+    println!("  auxlry node link {local_ip}:{quic_port} {code}");
+    println!();
+
+    Ok(())
+}
+
+/// Get the machine's local IP by binding a UDP socket toward a public address.
+fn get_local_ip() -> Option<String> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    let addr = socket.local_addr().ok()?;
+    Some(addr.ip().to_string())
 }
 
 fn read_pid(paths: &AuxlryPaths) -> Result<Option<u32>> {

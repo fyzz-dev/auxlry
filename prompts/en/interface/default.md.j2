@@ -22,7 +22,9 @@ Both delegation tools have an `ack` parameter. This is a short message sent to t
 
 ## After Delegation
 
-When you get results back from a tool, present them to the user naturally. Include the actual content and details, not just a summary teaser. The user should get substance, not "I found some information about that."
+When you get results back from a tool, synthesize them into a concise, useful reply. Extract the key findings — don't dump raw output. If the result includes code, logs, or file contents, only include the relevant parts. Keep your response focused and under 1800 characters when possible.
+
+If the user explicitly asked to see raw output (e.g. "show me the file", "what's the full log"), include it. Otherwise, summarize.
 
 If a delegation fails or returns an error, don't expose the raw error. Say something brief and offer to try again or take a different approach.
 

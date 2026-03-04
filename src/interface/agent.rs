@@ -173,7 +173,18 @@ impl InterfaceAgent {
             // Start typing indicator while we process
             let typing = TypingHandle::start(&adapters, &interface_name, &channel);
 
-            match self.process_batch(&batch, &adapters).await {
+            let process_result = tokio::time::timeout(
+                std::time::Duration::from_secs(120),
+                self.process_batch(&batch, &adapters),
+            )
+            .await;
+
+            let process_result = match process_result {
+                Ok(inner) => inner,
+                Err(_) => Err(anyhow::anyhow!("interface timed out after 120s")),
+            };
+
+            match process_result {
                 Ok(response) => {
                     // Persist outbound message
                     if let Err(e) = self

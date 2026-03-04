@@ -71,7 +71,8 @@ export function MessageHeatmap({ data }: Props) {
                     background:
                       level === 0
                         ? "var(--color-muted)"
-                        : `color-mix(in oklch, var(--color-chart-1) ${level * 25}%, var(--color-muted))`,
+                        : "var(--color-chart-1)",
+                    opacity: level === 0 ? 1 : level * 0.25,
                   }}
                   title={`${cell.date.toISOString().slice(0, 10)}: ${cell.count} messages`}
                 />
@@ -91,7 +92,8 @@ export function MessageHeatmap({ data }: Props) {
               background:
                 l === 0
                   ? "var(--color-muted)"
-                  : `color-mix(in oklch, var(--color-chart-1) ${l * 25}%, var(--color-muted))`,
+                  : "var(--color-chart-1)",
+              opacity: l === 0 ? 1 : l * 0.25,
             }}
           />
         ))}
