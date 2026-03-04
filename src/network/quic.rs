@@ -39,6 +39,9 @@ pub fn server_endpoint(bind_addr: SocketAddr) -> Result<Endpoint> {
 
 /// Create a QUIC client endpoint.
 pub fn client_endpoint() -> Result<Endpoint> {
+    // Ensure a CryptoProvider is installed (no-op if already set by server_endpoint)
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let client_crypto = rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(SkipVerification))
