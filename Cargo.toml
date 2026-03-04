@@ -1,0 +1,73 @@
+[package]
+name = "auxlry"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web / API
+axum = { version = "0.8", features = ["macros"] }
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
+tower-http = { version = "0.6", features = ["cors"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+
+# Config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# LLM
+rig-core = { version = "0.31", features = ["derive"] }
+
+# Discord
+serenity = { version = "0.12", features = ["client", "gateway", "model", "cache"] }
+
+# Transport
+quinn = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.13"
+bincode = { version = "2", features = ["serde"] }
+
+# Templates
+minijinja = { version = "2", features = ["loader"] }
+
+# Embeddings + Vector store
+fastembed = "5"
+lancedb = "0.26"
+arrow-array = "57"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Utils
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+dashmap = "6"
+dirs = "6"
+regex = "1"
+futures = "0.3"
+tokio-stream = { version = "0.1", features = ["sync"] }
+libc = "0.2"
+rand = "0.8"
+async-trait = "0.1"
+glob = "0.3"
+arrow-schema = "57"
+tower = "0.5"
+md5 = "0.7"
+sha1 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"

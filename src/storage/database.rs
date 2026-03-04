@@ -1,0 +1,225 @@
+use anyhow::{Context, Result};
+use sqlx::{Row, SqlitePool, sqlite::SqlitePoolOptions};
+
+use crate::events::types::Event;
+
+/// A message retrieved from the database.
+#[derive(Debug, Clone)]
+pub struct StoredMessage {
+    pub author: String,
+    pub content: String,
+    pub direction: String,
+    pub created_at: String,
+}
+
+/// SQLite database wrapper.
+#[derive(Debug, Clone)]
+pub struct Database {
+    pool: SqlitePool,
+}
+
+impl Database {
+    /// Open (or create) the SQLite database and run migrations.
+    pub async fn open(path: &str) -> Result<Self> {
+        // Ensure parent directory exists
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let url = format!("sqlite:{path}?mode=rwc");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(5)
+            .connect(&url)
+            .await
+            .context("failed to connect to SQLite")?;
+
+        let db = Self { pool };
+        db.run_migrations().await?;
+        Ok(db)
+    }
+
+    async fn run_migrations(&self) -> Result<()> {
+        let m001 = include_str!("../../migrations/001_initial.sql");
+        sqlx::raw_sql(m001)
+            .execute(&self.pool)
+            .await
+            .context("failed to run migration 001")?;
+
+        let m002 = include_str!("../../migrations/002_memory_graph.sql");
+        sqlx::raw_sql(m002)
+            .execute(&self.pool)
+            .await
+            .context("failed to run migration 002")?;
+
+        Ok(())
+    }
+
+    /// Insert an event record.
+    pub async fn insert_event(&self, event: &Event) -> Result<()> {
+        let payload_json =
+            serde_json::to_string(&event.payload).context("failed to serialize event payload")?;
+
+        sqlx::query("INSERT INTO events (id, kind, payload, created_at) VALUES (?, ?, ?, ?)")
+            .bind(&event.id)
+            .bind(event.kind())
+            .bind(&payload_json)
+            .bind(event.timestamp.to_rfc3339())
+            .execute(&self.pool)
+            .await
+            .context("failed to insert event")?;
+
+        Ok(())
+    }
+
+    /// Insert a message record.
+    pub async fn insert_message(
+        &self,
+        interface: &str,
+        channel: &str,
+        author: &str,
+        content: &str,
+        direction: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO messages (interface, channel, author, content, direction) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(interface)
+        .bind(channel)
+        .bind(author)
+        .bind(content)
+        .bind(direction)
+        .execute(&self.pool)
+        .await
+        .context("failed to insert message")?;
+
+        Ok(())
+    }
+
+    /// Query recent events, newest first.
+    pub async fn recent_events(&self, limit: i64) -> Result<Vec<Event>> {
+        let rows =
+            sqlx::query("SELECT id, kind, payload, created_at FROM events ORDER BY created_at DESC LIMIT ?")
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?;
+
+        let mut events = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id: String = row.get("id");
+            let payload_str: String = row.get("payload");
+            let created_at: String = row.get("created_at");
+
+            let payload = serde_json::from_str(&payload_str)?;
+            let timestamp = chrono::DateTime::parse_from_rfc3339(&created_at)?.to_utc();
+
+            events.push(Event {
+                id,
+                timestamp,
+                payload,
+            });
+        }
+        Ok(events)
+    }
+
+    /// Store a node authentication token.
+    pub async fn store_node_token(&self, node_name: &str, token: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO node_tokens (node_name, token) VALUES (?, ?)",
+        )
+        .bind(node_name)
+        .bind(token)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Get a node's authentication token.
+    pub async fn get_node_token(&self, node_name: &str) -> Result<Option<String>> {
+        let row = sqlx::query("SELECT token FROM node_tokens WHERE node_name = ?")
+            .bind(node_name)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| r.get("token")))
+    }
+
+    /// Query recent messages for a given interface+channel, oldest first.
+    pub async fn get_recent_messages(
+        &self,
+        interface: &str,
+        channel: &str,
+        limit: i64,
+    ) -> Result<Vec<StoredMessage>> {
+        let rows = sqlx::query(
+            "SELECT author, content, direction, created_at FROM messages \
+             WHERE interface = ? AND channel = ? \
+             ORDER BY created_at DESC LIMIT ?",
+        )
+        .bind(interface)
+        .bind(channel)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Reverse so oldest is first (chronological order)
+        let mut messages: Vec<StoredMessage> = rows
+            .iter()
+            .map(|row| StoredMessage {
+                author: row.get("author"),
+                content: row.get("content"),
+                direction: row.get("direction"),
+                created_at: row.get("created_at"),
+            })
+            .collect();
+        messages.reverse();
+        Ok(messages)
+    }
+
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::types::EventPayload;
+
+    async fn temp_db() -> Database {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        // Keep dir alive by leaking — test only
+        let path_str = path.to_string_lossy().to_string();
+        std::mem::forget(dir);
+        Database::open(&path_str).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn insert_and_query_events() {
+        let db = temp_db().await;
+        let event = Event::new(EventPayload::CoreStarted);
+        db.insert_event(&event).await.unwrap();
+
+        let events = db.recent_events(10).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind(), "core_started");
+    }
+
+    #[tokio::test]
+    async fn insert_message() {
+        let db = temp_db().await;
+        db.insert_message("discord", "general", "user1", "hello", "inbound")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_tokens() {
+        let db = temp_db().await;
+        db.store_node_token("mynode", "secret123").await.unwrap();
+        let token = db.get_node_token("mynode").await.unwrap();
+        assert_eq!(token, Some("secret123".to_string()));
+
+        let missing = db.get_node_token("other").await.unwrap();
+        assert!(missing.is_none());
+    }
+}

@@ -1,0 +1,170 @@
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use rig::prelude::*;
+use rig::providers::openrouter;
+use tokio::sync::Semaphore;
+use tracing::{info, warn};
+use uuid::Uuid;
+
+use crate::core::state::AppState;
+use crate::events::types::{Event, EventPayload};
+use crate::interface::router::PromptRouter;
+use crate::memory::tools::MemorySearchTool;
+use crate::node::executor::NodeExecutor;
+use crate::operator::tools::*;
+
+const MAX_RETRIES: usize = 2;
+
+/// The Operator agent: executes actions on nodes using rig tool calling.
+pub struct OperatorAgent {
+    state: AppState,
+    node: Arc<dyn NodeExecutor>,
+    prompt_router: PromptRouter,
+    semaphore: Arc<Semaphore>,
+}
+
+impl OperatorAgent {
+    pub fn new(state: AppState, node: Arc<dyn NodeExecutor>) -> Result<Self> {
+        let max = state.config.concurrency.max_operators;
+        let prompt_router = PromptRouter::new(&state.config.locale)?;
+        Ok(Self {
+            state,
+            node,
+            prompt_router,
+            semaphore: Arc::new(Semaphore::new(max)),
+        })
+    }
+
+    /// Build a fresh rig agent with all tools attached.
+    fn build_agent(
+        &self,
+        client: &rig::providers::openrouter::Client,
+        model: &str,
+        system_prompt: &str,
+    ) -> rig::agent::Agent<rig::providers::openrouter::CompletionModel> {
+        let node = self.node.clone();
+        let mut agent_builder = client
+            .agent(model)
+            .preamble(system_prompt)
+            .tool(ReadFileTool { node: node.clone() })
+            .tool(WriteFileTool { node: node.clone() })
+            .tool(RunCommandTool { node: node.clone() })
+            .tool(ListDirTool { node: node.clone() })
+            .tool(SearchFilesTool { node: node.clone() });
+
+        if let Some(ref memory) = self.state.memory {
+            agent_builder = agent_builder.tool(MemorySearchTool {
+                memory: memory.clone(),
+                db: self.state.db.clone(),
+            });
+        }
+
+        agent_builder.build()
+    }
+
+    /// Run an operator task: build a rig agent with node tools and let it execute.
+    pub async fn run(&self, task: &str) -> Result<String> {
+        let _permit = self
+            .semaphore
+            .acquire()
+            .await
+            .context("semaphore closed")?;
+
+        let op_id = Uuid::new_v4().to_string();
+        let max_turns = self.state.config.concurrency.max_operator_steps;
+
+        self.state
+            .bus
+            .publish(Event::new(EventPayload::OperatorStarted {
+                operator_id: op_id.clone(),
+                task: task.to_string(),
+                node: self.node.name().to_string(),
+            }));
+
+        let system_prompt = self.prompt_router.render(
+            "operator_default",
+            minijinja::context! {
+                task_description => task,
+                node_name => self.node.name(),
+            },
+        )?;
+
+        let api_key = &self.state.config.models.api_key;
+        let model = &self.state.config.models.operator;
+
+        use rig::completion::Prompt;
+
+        let client: openrouter::Client =
+            openrouter::Client::new(api_key).context("failed to create OpenRouter client")?;
+
+        // Retry on transient API errors (e.g. OpenRouter response parse failures)
+        let mut last_err = None;
+        for attempt in 0..=MAX_RETRIES {
+            if attempt > 0 {
+                warn!(
+                    op_id = %op_id,
+                    attempt = attempt + 1,
+                    "retrying operator after transient error"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
+            }
+
+            let agent = self.build_agent(&client, model, &system_prompt);
+            let result: Result<String, _> = agent.prompt(task).max_turns(max_turns).await;
+
+            match result {
+                Ok(response) => {
+                    info!(op_id = %op_id, "operator completed");
+                    self.state
+                        .bus
+                        .publish(Event::new(EventPayload::OperatorCompleted {
+                            operator_id: op_id,
+                            result: response.clone(),
+                        }));
+                    return Ok(response);
+                }
+                Err(rig::completion::PromptError::MaxTurnsError { .. }) => {
+                    let msg = format!("Operator hit the step limit ({max_turns}) — partial results may be available in the conversation.");
+                    warn!(op_id = %op_id, "{msg}");
+                    self.state
+                        .bus
+                        .publish(Event::new(EventPayload::OperatorCompleted {
+                            operator_id: op_id,
+                            result: msg.clone(),
+                        }));
+                    return Ok(msg);
+                }
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    if err_msg.contains("JsonError") || err_msg.contains("ApiResponse") {
+                        warn!(
+                            op_id = %op_id,
+                            attempt = attempt + 1,
+                            error = %err_msg,
+                            "transient API error, will retry"
+                        );
+                        last_err = Some(err_msg);
+                        continue;
+                    }
+                    self.state
+                        .bus
+                        .publish(Event::new(EventPayload::OperatorFailed {
+                            operator_id: op_id,
+                            error: err_msg.clone(),
+                        }));
+                    return Err(anyhow::anyhow!(err_msg));
+                }
+            }
+        }
+
+        let err_msg = last_err.unwrap_or_else(|| "unknown error".to_string());
+        self.state
+            .bus
+            .publish(Event::new(EventPayload::OperatorFailed {
+                operator_id: op_id,
+                error: err_msg.clone(),
+            }));
+        Err(anyhow::anyhow!(err_msg))
+    }
+}
