@@ -110,7 +110,7 @@ async fn authenticate(conn: &Connection, db: &Database) -> Result<String> {
     let msg = recv_message(&mut recv).await?;
 
     match msg {
-        ProtocolMessage::AuthRequest { code } => {
+        ProtocolMessage::AuthRequest { code, name } => {
             // Validate the one-time code against pending_link_codes table
             let valid = db.consume_pending_code(&code).await.unwrap_or(false);
 
@@ -127,7 +127,7 @@ async fn authenticate(conn: &Connection, db: &Database) -> Result<String> {
                 anyhow::bail!("invalid or expired link code");
             }
 
-            let node_name = format!("node-{}", &code);
+            let node_name = name;
             let token = uuid::Uuid::new_v4().to_string();
             linking::store_link_token(db, &node_name, &token).await?;
 

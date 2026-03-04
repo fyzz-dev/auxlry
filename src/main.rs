@@ -56,6 +56,8 @@ enum NodeAction {
     },
     /// Link a remote node to this core
     Link {
+        /// Node name
+        name: String,
         /// Core address (host:port)
         core_addr: String,
         /// One-time auth code
@@ -90,8 +92,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Node { action } => match action {
             NodeAction::Start { name } => auxlry::cli::node_cmd::start(&name).await,
             NodeAction::Stop { name } => auxlry::cli::node_cmd::stop(&name).await,
-            NodeAction::Link { core_addr, code } => {
-                auxlry::cli::node_cmd::link(&core_addr, &code).await
+            NodeAction::Link { name, core_addr, code } => {
+                auxlry::cli::node_cmd::link(&name, &core_addr, &code).await
             }
         },
     }

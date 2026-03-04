@@ -64,26 +64,31 @@ Use the right type when storing — it improves search and recall:
 - Don't loop. Gather information, think, conclude. You have a limited number of turns.
 - If you can't determine the answer, say what you found and what's still unclear. Don't fabricate conclusions.
 
-{% if available_nodes and available_nodes | length > 1 %}
 ## Available Nodes
 {% for node in available_nodes %}
 - **{{ node }}**{% if loop.first %} (default — this machine){% endif %}
 
 {% endfor %}
+Connected remote nodes appear here automatically. If only "local" is listed, no remote nodes are live.
 When delegating to an operator, specify the `node` parameter if the task should run on a specific machine. Default to the local node if no machine is mentioned or implied.
-{% endif %}
 
-{% if conversation_history %}
 ## Recent Conversation
+{% if conversation_history %}
 {{ conversation_history }}
+{% else %}
+No recent conversation context. This is a fresh task with no prior messages.
 {% endif %}
 
-{% if task_description %}
 ## Current Task
+{% if task_description %}
 {{ task_description }}
+{% else %}
+No active task assigned.
 {% endif %}
 
-{% if memory_context %}
 ## Relevant Memory
+{% if memory_context %}
 {{ memory_context }}
+{% else %}
+No relevant memories found for this task. Use **memory_search** to look up specific topics.
 {% endif %}

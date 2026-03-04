@@ -10,7 +10,7 @@ use crate::adapters::Adapter;
 use crate::core::state::AppState;
 use crate::events::types::{Event, EventPayload};
 use crate::interface::router::PromptRouter;
-use crate::interface::session::BatchedInput;
+use crate::interface::session::{BatchedInput, PendingMessage};
 use crate::interface::tools::{
     DelegateOperatorTool, DelegationContext, DelegateSynapseTool,
 };
@@ -161,7 +161,46 @@ impl InterfaceAgent {
             .context("interface prompt failed after retries")
     }
 
+    /// Send a response: persist, publish event, and deliver via adapter.
+    async fn send_response(
+        &self,
+        adapters: &[Arc<dyn Adapter>],
+        interface_name: &str,
+        channel: &str,
+        response: &str,
+    ) {
+        if let Err(e) = self
+            .state
+            .db
+            .insert_message(interface_name, channel, "auxlry", response, "outbound")
+            .await
+        {
+            warn!(error = %e, "failed to persist outbound message");
+        }
+
+        self.state
+            .bus
+            .publish(Event::new(EventPayload::InterfaceReply {
+                interface: interface_name.to_string(),
+                channel: channel.to_string(),
+                content: response.to_string(),
+            }));
+
+        for adapter in adapters {
+            if adapter.name() == interface_name {
+                if let Err(e) = adapter.send_message(channel, response).await {
+                    error!(error = %e, "failed to send reply via adapter");
+                }
+            }
+        }
+    }
+
     /// Run the interface loop: consume batched inputs, produce events.
+    ///
+    /// Batching only happens while the LLM is actively generating. Messages
+    /// that arrive during generation for the same channel are collected and
+    /// incorporated into a single re-generated reply. Messages for other
+    /// channels are deferred and processed next.
     pub async fn run(
         self,
         mut batch_rx: tokio::sync::mpsc::Receiver<BatchedInput>,
@@ -169,56 +208,60 @@ impl InterfaceAgent {
     ) {
         info!("interface agent started");
 
-        while let Some(batch) = batch_rx.recv().await {
+        // Batches for other channels that arrived while we were generating.
+        let mut deferred: Vec<BatchedInput> = Vec::new();
+
+        loop {
+            // Serve deferred batches first, otherwise wait for new input.
+            let batch = if let Some(b) = deferred.pop() {
+                b
+            } else {
+                match batch_rx.recv().await {
+                    Some(b) => b,
+                    None => break,
+                }
+            };
+
             let interface_name = batch.interface.clone();
             let channel = batch.channel.clone();
 
-            // Start typing indicator while we process
+            // Start typing indicator while we process.
             let typing = TypingHandle::start(&adapters, &interface_name, &channel);
 
-            let process_result = tokio::time::timeout(
-                std::time::Duration::from_secs(120),
-                self.process_batch(&batch, &adapters),
-            )
-            .await;
+            let result = self.process_batch(&batch, &adapters).await;
 
-            let process_result = match process_result {
-                Ok(inner) => inner,
-                Err(_) => Err(anyhow::anyhow!("interface timed out after 120s")),
+            // Drain any batches that queued up during generation.
+            let mut extra_same_channel: Vec<PendingMessage> = Vec::new();
+            while let Ok(additional) = batch_rx.try_recv() {
+                if additional.channel == channel && additional.interface == interface_name {
+                    extra_same_channel.extend(additional.messages);
+                } else {
+                    deferred.push(additional);
+                }
+            }
+
+            // If same-channel messages arrived mid-generation, re-generate once
+            // with everything combined so the reply covers all input.
+            let final_result = if !extra_same_channel.is_empty() {
+                info!(
+                    channel = %channel,
+                    extra = extra_same_channel.len(),
+                    "messages arrived during generation, re-processing"
+                );
+                let mut combined = batch;
+                combined.messages.extend(extra_same_channel);
+                self.process_batch(&combined, &adapters).await
+            } else {
+                result
             };
 
-            match process_result {
+            match final_result {
                 Ok(response) => {
-                    // Persist outbound message
-                    if let Err(e) = self
-                        .state
-                        .db
-                        .insert_message(&interface_name, &channel, "auxlry", &response, "outbound")
-                        .await
-                    {
-                        warn!(error = %e, "failed to persist outbound message");
-                    }
-
-                    // The response is already synthesized by the LLM after seeing tool results
-                    self.state
-                        .bus
-                        .publish(Event::new(EventPayload::InterfaceReply {
-                            interface: interface_name.clone(),
-                            channel: channel.clone(),
-                            content: response.clone(),
-                        }));
-
-                    for adapter in &adapters {
-                        if adapter.name() == interface_name {
-                            if let Err(e) = adapter.send_message(&channel, &response).await {
-                                error!(error = %e, "failed to send reply via adapter");
-                            }
-                        }
-                    }
+                    self.send_response(&adapters, &interface_name, &channel, &response)
+                        .await;
                 }
                 Err(e) => {
                     error!(error = ?e, "interface processing failed");
-                    // Send a friendly error message
                     for adapter in &adapters {
                         if adapter.name() == interface_name {
                             let _ = adapter
@@ -232,7 +275,7 @@ impl InterfaceAgent {
                 }
             }
 
-            // Stop typing indicator
+            // Stop typing indicator.
             drop(typing);
         }
     }

@@ -66,7 +66,7 @@ auxlry core stop
 ### Verify
 
 ```sh
-curl http://localhost:8400/health
+curl http://localhost:8400/api/health
 # {"status":"ok"}
 
 # Interactive API docs
@@ -79,8 +79,8 @@ open http://localhost:8400/swagger-ui/
 ┌─────────────────────────────────────────────────────────────┐
 │                        CORE DAEMON                          │
 │                                                             │
-│  Event Bus ──▶ SQLite DB          REST API (axum)           │
-│      │                            /health /events /swagger  │
+│  Event Bus ──▶ SQLite DB          REST API (axum)            │
+│      │                            /api/health /api/events    │
 │      │                                                      │
 │  Interface Agent                                            │
 │    messages in → batch → LLM → reply / delegate             │
@@ -110,22 +110,42 @@ auxlry core link                    Generate a one-time node link code
 
 auxlry node start <name>            Start a node
 auxlry node stop <name>             Stop a node
-auxlry node link <addr> <code>      Link a remote node via one-time code
+auxlry node link <name> <addr> <code>  Link a remote node via one-time code
 ```
+
+### Node Linking
+
+To connect a remote node to a core instance:
+
+```sh
+# On the core machine — generate a one-time link code
+auxlry core link
+# Output: Link code: 483291 (expires in 5 minutes)
+
+# On the remote machine — link using a chosen name
+auxlry node link desktop 192.168.1.10:4433 483291
+# Output: linked successfully — token saved
+
+# Start the node (uses the saved token to reconnect)
+auxlry node start desktop
+```
+
+The name you provide during `node link` is how the node appears in the registry and agent prompts (e.g. "desktop", "gpu-server").
 
 ## API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/health` | Health check |
-| GET | `/events` | SSE event stream |
-| GET | `/events/recent` | Last 50 persisted events |
-| GET | `/dashboard/status` | System overview |
-| GET | `/config` | Current config (secrets redacted) |
-| GET | `/memories/search?q=...` | Hybrid memory search |
-| POST | `/memories` | Store a memory |
-| POST | `/memories/edges` | Create a graph edge |
-| GET | `/memories/{id}/edges` | Get edges for a memory |
+| GET | `/api/health` | Health check |
+| GET | `/api/events` | SSE event stream |
+| GET | `/api/events/recent` | Last 50 persisted events |
+| GET | `/api/status` | System overview |
+| GET | `/api/config` | Current config (secrets redacted) |
+| GET | `/api/memories/search?q=...` | Hybrid memory search |
+| POST | `/api/memories` | Store a memory |
+| POST | `/api/memories/edges` | Create a graph edge |
+| GET | `/api/memories/{id}/edges` | Get edges for a memory |
+| GET | `/api/memories/graph` | Memory knowledge graph |
 | GET | `/swagger-ui/` | Interactive API docs |
 
 ## Configuration
@@ -163,7 +183,7 @@ interfaces:
 ## Development
 
 ```sh
-cargo test           # Run tests (34 unit tests)
+cargo test           # Run tests (52 unit tests)
 cargo check          # Type-check without building
 cargo clippy         # Lint
 

@@ -27,7 +27,9 @@ Execute the task you were given using the tools available. You operate on the **
 - **Stay focused.** Do what was asked. Don't explore tangential work or make changes that weren't requested.
 - **Respect boundaries.** In workspace mode, file operations are sandboxed. Don't try to escape the sandbox.
 
-{% if task_description %}
 ## Task
+{% if task_description %}
 {{ task_description }}
+{% else %}
+No task description provided.
 {% endif %}

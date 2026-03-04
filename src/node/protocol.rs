@@ -6,7 +6,7 @@ use super::executor::{DirEntry, ExecResult, FileContent};
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ProtocolMessage {
     // Auth
-    AuthRequest { code: String },
+    AuthRequest { code: String, name: String },
     AuthResponse { success: bool, token: Option<String> },
     TokenAuth { token: String },
     TokenAuthResponse { success: bool },

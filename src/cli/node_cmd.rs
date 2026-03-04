@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::{Context, Result, bail};
 use tracing::info;
 
@@ -10,61 +12,143 @@ use crate::node::local::LocalNode;
 use crate::node::protocol::ProtocolMessage;
 use crate::storage::paths::AuxlryPaths;
 
+const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
+const BACKOFF_MAX: Duration = Duration::from_secs(30);
+
 /// Start a node — connects to core via QUIC and enters the protocol loop.
+/// Automatically reconnects on network errors with exponential backoff.
 pub async fn start(name: &str) -> Result<()> {
     info!(node = name, "starting node");
 
     let paths = AuxlryPaths::new()?;
-
-    // Load saved token and core address from file
     let token = linking::read_token_file(&paths.token_file).await?;
     let core_addr = linking::read_core_addr(&paths.core_addr_file).await?;
-    let endpoint = quic::client_endpoint()?;
 
-    let conn = endpoint
-        .connect(core_addr.parse()?, "auxlry")
-        .context("failed to connect to core")?
-        .await
-        .context("QUIC handshake failed")?;
-
-    // Authenticate with token
-    let (mut send, mut recv) = conn
-        .open_bi()
-        .await
-        .context("failed to open auth stream")?;
-
-    send_message(&mut send, &ProtocolMessage::TokenAuth { token }).await?;
-    send.finish().context("failed to finish auth send")?;
-
-    let response = recv_message(&mut recv).await?;
-    match response {
-        ProtocolMessage::TokenAuthResponse { success: true } => {
-            info!("authenticated with core");
-        }
-        ProtocolMessage::TokenAuthResponse { success: false } => {
-            bail!("authentication failed — token may be invalid, try re-linking");
-        }
-        _ => bail!("unexpected auth response"),
-    }
-
-    println!("node '{name}' connected and ready");
-
-    // Create local node for executing requests
     let workspace = paths.workspace_dir.join(name);
     std::fs::create_dir_all(&workspace)?;
     let local_node = LocalNode::new(name.to_string(), NodeMode::Workspace, Some(workspace));
 
-    // Protocol loop: accept requests from core and execute locally
+    let mut backoff = BACKOFF_INITIAL;
+
+    loop {
+        // Connect to core
+        let endpoint = quic::client_endpoint()?;
+        let conn = match endpoint
+            .connect(core_addr.parse()?, "auxlry")
+            .context("failed to connect to core")
+        {
+            Ok(connecting) => match connecting.await {
+                Ok(conn) => conn,
+                Err(e) => {
+                    eprintln!("QUIC handshake failed: {e}");
+                    println!("reconnecting in {}s...", backoff.as_secs());
+                    info!(delay = backoff.as_secs(), "reconnecting after handshake failure");
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(BACKOFF_MAX);
+                    continue;
+                }
+            },
+            Err(e) => {
+                eprintln!("failed to connect to core: {e}");
+                println!("reconnecting in {}s...", backoff.as_secs());
+                info!(delay = backoff.as_secs(), "reconnecting after connect failure");
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(BACKOFF_MAX);
+                continue;
+            }
+        };
+
+        // Authenticate with token
+        let auth_result = authenticate(&conn, &token).await;
+        match auth_result {
+            Ok(()) => {
+                info!("authenticated with core");
+            }
+            Err(AuthError::InvalidToken(msg)) => {
+                bail!("{msg}");
+            }
+            Err(AuthError::Network(e)) => {
+                eprintln!("auth failed (network): {e}");
+                println!("reconnecting in {}s...", backoff.as_secs());
+                info!(delay = backoff.as_secs(), "reconnecting after auth network error");
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(BACKOFF_MAX);
+                continue;
+            }
+        }
+
+        // Connected and authenticated — reset backoff
+        backoff = BACKOFF_INITIAL;
+        println!("node '{name}' connected and ready");
+
+        // Protocol loop
+        let exit = run_protocol_loop(&conn, &local_node).await;
+        match exit {
+            LoopExit::GracefulClose => {
+                println!("core disconnected gracefully");
+                return Ok(());
+            }
+            LoopExit::ConnectionError(e) => {
+                eprintln!("connection lost: {e}");
+                println!("reconnecting in {}s...", backoff.as_secs());
+                info!(delay = backoff.as_secs(), "reconnecting after connection loss");
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(BACKOFF_MAX);
+            }
+        }
+    }
+}
+
+enum AuthError {
+    InvalidToken(String),
+    Network(anyhow::Error),
+}
+
+async fn authenticate(conn: &quinn::Connection, token: &str) -> std::result::Result<(), AuthError> {
+    let (mut send, mut recv) = conn
+        .open_bi()
+        .await
+        .map_err(|e| AuthError::Network(e.into()))?;
+
+    send_message(
+        &mut send,
+        &ProtocolMessage::TokenAuth {
+            token: token.to_string(),
+        },
+    )
+    .await
+    .map_err(|e| AuthError::Network(e))?;
+
+    send.finish()
+        .map_err(|e| AuthError::Network(e.into()))?;
+
+    let response = recv_message(&mut recv)
+        .await
+        .map_err(|e| AuthError::Network(e))?;
+
+    match response {
+        ProtocolMessage::TokenAuthResponse { success: true } => Ok(()),
+        ProtocolMessage::TokenAuthResponse { success: false } => Err(AuthError::InvalidToken(
+            "authentication failed — token may be invalid, try re-linking".to_string(),
+        )),
+        _ => Err(AuthError::Network(anyhow::anyhow!("unexpected auth response"))),
+    }
+}
+
+enum LoopExit {
+    GracefulClose,
+    ConnectionError(String),
+}
+
+async fn run_protocol_loop(conn: &quinn::Connection, local_node: &LocalNode) -> LoopExit {
     loop {
         let (mut send, mut recv) = match conn.accept_bi().await {
             Ok(s) => s,
             Err(quinn::ConnectionError::ApplicationClosed(_)) => {
-                println!("core disconnected gracefully");
-                break;
+                return LoopExit::GracefulClose;
             }
             Err(e) => {
-                eprintln!("connection error: {e}");
-                break;
+                return LoopExit::ConnectionError(e.to_string());
             }
         };
 
@@ -128,8 +212,6 @@ pub async fn start(name: &str) -> Result<()> {
         }
         let _ = send.finish();
     }
-
-    Ok(())
 }
 
 /// Stop a node.
@@ -140,7 +222,7 @@ pub async fn stop(name: &str) -> Result<()> {
 }
 
 /// Link a remote node to this core using a one-time code.
-pub async fn link(core_addr: &str, code: &str) -> Result<()> {
+pub async fn link(name: &str, core_addr: &str, code: &str) -> Result<()> {
     info!(core = core_addr, "linking node");
 
     let paths = AuxlryPaths::new()?;
@@ -166,6 +248,7 @@ pub async fn link(core_addr: &str, code: &str) -> Result<()> {
         &mut send,
         &ProtocolMessage::AuthRequest {
             code: code.to_string(),
+            name: name.to_string(),
         },
     )
     .await?;
