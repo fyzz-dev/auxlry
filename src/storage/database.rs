@@ -174,6 +174,57 @@ impl Database {
         Ok(messages)
     }
 
+    /// Count events grouped by day and kind for the last N days.
+    pub async fn events_by_day(&self, kinds: &[&str], days: i64) -> Result<Vec<(String, String, i64)>> {
+        if kinds.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders: Vec<&str> = kinds.iter().map(|_| "?").collect();
+        let sql = format!(
+            "SELECT date(created_at) as day, kind, COUNT(*) as cnt \
+             FROM events \
+             WHERE kind IN ({}) AND created_at >= datetime('now', '-{} days') \
+             GROUP BY day, kind ORDER BY day",
+            placeholders.join(","),
+            days
+        );
+        let mut query = sqlx::query(&sql);
+        for kind in kinds {
+            query = query.bind(*kind);
+        }
+        let rows = query.fetch_all(&self.pool).await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get("day"), r.get("kind"), r.get("cnt")))
+            .collect())
+    }
+
+    /// Count messages per day for the current month.
+    pub async fn messages_per_day_this_month(&self) -> Result<Vec<(String, i64)>> {
+        let rows = sqlx::query(
+            "SELECT date(created_at) as day, COUNT(*) as cnt \
+             FROM messages \
+             WHERE created_at >= date('now', 'start of month') \
+             GROUP BY day ORDER BY day",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.iter().map(|r| (r.get("day"), r.get("cnt"))).collect())
+    }
+
+    /// Count memories grouped by type.
+    pub async fn memory_counts_by_type(&self) -> Result<Vec<(String, i64)>> {
+        let rows = sqlx::query(
+            "SELECT memory_type, COUNT(*) as cnt FROM memory_metadata GROUP BY memory_type",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get("memory_type"), r.get("cnt")))
+            .collect())
+    }
+
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
     }

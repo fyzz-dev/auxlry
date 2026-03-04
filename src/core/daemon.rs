@@ -4,6 +4,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tokio::net::TcpListener;
 use tokio::signal;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::adapters::discord::DiscordAdapter;
@@ -64,6 +65,9 @@ pub async fn run(paths: AuxlryPaths) -> Result<()> {
     // Start event persister
     let _persister = spawn_persister(bus.subscribe(), db.clone());
 
+    // Create cancellation token for graceful shutdown
+    let shutdown = CancellationToken::new();
+
     // Build shared state
     let state = AppState::new(config.clone(), bus.clone(), db.clone(), paths.clone(), memory);
 
@@ -108,9 +112,17 @@ pub async fn run(paths: AuxlryPaths) -> Result<()> {
     // Spawn each adapter's start() as a background task
     for adapter in &adapters {
         let adapter = Arc::clone(adapter);
+        let token = shutdown.clone();
         tokio::spawn(async move {
-            if let Err(e) = adapter.start().await {
-                error!(adapter = adapter.name(), error = %e, "adapter stopped with error");
+            tokio::select! {
+                result = adapter.start() => {
+                    if let Err(e) = result {
+                        error!(adapter = adapter.name(), error = %e, "adapter stopped with error");
+                    }
+                }
+                () = token.cancelled() => {
+                    info!(adapter = adapter.name(), "adapter shutting down");
+                }
             }
         });
     }
@@ -120,32 +132,38 @@ pub async fn run(paths: AuxlryPaths) -> Result<()> {
         let mut bus_rx = bus.subscribe();
         let session_mgr = Arc::clone(&session_mgr);
         let db = db.clone();
+        let token = shutdown.clone();
         tokio::spawn(async move {
             loop {
-                match bus_rx.recv().await {
-                    Ok(event) => {
-                        if let EventPayload::MessageReceived {
-                            interface,
-                            channel,
-                            author,
-                            content,
-                        } = &event.payload
-                        {
-                            session_mgr
-                                .add_message(interface, channel, author, content)
-                                .await;
-                            if let Err(e) = db
-                                .insert_message(interface, channel, author, content, "inbound")
-                                .await
-                            {
-                                warn!(error = %e, "failed to persist inbound message");
+                tokio::select! {
+                    result = bus_rx.recv() => {
+                        match result {
+                            Ok(event) => {
+                                if let EventPayload::MessageReceived {
+                                    interface,
+                                    channel,
+                                    author,
+                                    content,
+                                } = &event.payload
+                                {
+                                    session_mgr
+                                        .add_message(interface, channel, author, content)
+                                        .await;
+                                    if let Err(e) = db
+                                        .insert_message(interface, channel, author, content, "inbound")
+                                        .await
+                                    {
+                                        warn!(error = %e, "failed to persist inbound message");
+                                    }
+                                }
                             }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                warn!(skipped = n, "event bus subscriber lagged");
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        warn!(skipped = n, "event bus subscriber lagged");
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    () = token.cancelled() => break,
                 }
             }
         });
@@ -184,8 +202,14 @@ pub async fn run(paths: AuxlryPaths) -> Result<()> {
         match InterfaceAgent::new(state.clone(), synapse, operator) {
             Ok(agent) => {
                 let agent_adapters = adapters.clone();
+                let token = shutdown.clone();
                 tokio::spawn(async move {
-                    agent.run(batch_rx, agent_adapters).await;
+                    tokio::select! {
+                        () = agent.run(batch_rx, agent_adapters) => {}
+                        () = token.cancelled() => {
+                            info!("interface agent shutting down");
+                        }
+                    }
                 });
             }
             Err(e) => {
@@ -207,26 +231,36 @@ pub async fn run(paths: AuxlryPaths) -> Result<()> {
                 let db = db.clone();
                 let bus = bus.clone();
                 let workspace = paths.workspace_dir.clone();
+                let token = shutdown.clone();
                 tokio::spawn(async move {
                     loop {
-                        match endpoint.accept().await {
-                            Some(incoming) => {
-                                let conn = match incoming.await {
-                                    Ok(c) => c,
-                                    Err(e) => {
-                                        warn!(error = %e, "failed to accept QUIC connection");
-                                        continue;
+                        tokio::select! {
+                            incoming = endpoint.accept() => {
+                                match incoming {
+                                    Some(incoming) => {
+                                        let conn = match incoming.await {
+                                            Ok(c) => c,
+                                            Err(e) => {
+                                                warn!(error = %e, "failed to accept QUIC connection");
+                                                continue;
+                                            }
+                                        };
+                                        let db = db.clone();
+                                        let bus = bus.clone();
+                                        let workspace = workspace.clone();
+                                        tokio::spawn(async move {
+                                            handler::handle_connection(conn, db, bus, workspace).await;
+                                        });
                                     }
-                                };
-                                let db = db.clone();
-                                let bus = bus.clone();
-                                let workspace = workspace.clone();
-                                tokio::spawn(async move {
-                                    handler::handle_connection(conn, db, bus, workspace).await;
-                                });
+                                    None => {
+                                        info!("QUIC endpoint closed");
+                                        break;
+                                    }
+                                }
                             }
-                            None => {
-                                info!("QUIC endpoint closed");
+                            () = token.cancelled() => {
+                                info!("QUIC server shutting down");
+                                endpoint.close(0u32.into(), b"shutdown");
                                 break;
                             }
                         }
@@ -255,7 +289,7 @@ pub async fn run(paths: AuxlryPaths) -> Result<()> {
 
     // Serve until shutdown signal
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(shutdown.clone()))
         .await
         .context("API server error")?;
 
@@ -272,7 +306,7 @@ pub async fn run(paths: AuxlryPaths) -> Result<()> {
     Ok(())
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(shutdown: CancellationToken) {
     let ctrl_c = async {
         signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
     };
@@ -292,4 +326,7 @@ async fn shutdown_signal() {
         () = ctrl_c => info!("received Ctrl+C"),
         () = terminate => info!("received SIGTERM"),
     }
+
+    // Signal all spawned tasks to stop
+    shutdown.cancel();
 }

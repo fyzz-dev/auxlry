@@ -10,7 +10,9 @@ use uuid::Uuid;
 use crate::core::state::AppState;
 use crate::events::types::{Event, EventPayload};
 use crate::interface::router::PromptRouter;
-use crate::memory::tools::{CreateEdgeTool, MemorySearchTool, MemoryStoreTool};
+use crate::memory::tools::{
+    CreateEdgeTool, MemoryDeleteTool, MemorySearchTool, MemoryStoreTool, MemoryUpdateTool,
+};
 use crate::operator::agent::OperatorAgent;
 use crate::synapse::tools::DelegateOperatorTool;
 
@@ -64,6 +66,15 @@ impl SynapseAgent {
                 })
                 .tool(CreateEdgeTool {
                     db: self.state.db.clone(),
+                })
+                .tool(MemoryUpdateTool {
+                    memory: memory.clone(),
+                    db: self.state.db.clone(),
+                    bus: self.state.bus.clone(),
+                })
+                .tool(MemoryDeleteTool {
+                    memory: memory.clone(),
+                    db: self.state.db.clone(),
                 });
         }
 
@@ -71,7 +82,12 @@ impl SynapseAgent {
     }
 
     /// Run a synapse task with operator delegation capability.
-    pub async fn run(&self, task: &str, memory_context: Option<&str>) -> Result<String> {
+    pub async fn run(
+        &self,
+        task: &str,
+        memory_context: Option<&str>,
+        conversation: Option<&str>,
+    ) -> Result<String> {
         let _permit = self
             .semaphore
             .acquire()
@@ -93,6 +109,7 @@ impl SynapseAgent {
             minijinja::context! {
                 task_description => task,
                 memory_context => memory_context.unwrap_or(""),
+                conversation_history => conversation.unwrap_or(""),
             },
         )?;
 

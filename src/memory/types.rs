@@ -53,10 +53,16 @@ pub fn classify_heuristic(content: &str) -> MemoryType {
         || lower.contains("decision:")
         || lower.contains("we chose")
         || lower.contains("i chose")
+        || lower.contains("chose to")
+        || lower.contains("decided")
         || lower.contains("agreed to")
         || lower.contains("will use")
         || lower.contains("going with")
+        || lower.contains("we'll go with")
         || lower.contains("settled on")
+        || lower.contains("switching to")
+        || lower.contains("migrating to")
+        || lower.contains("adopting")
     {
         return MemoryType::Decision;
     }
@@ -69,6 +75,11 @@ pub fn classify_heuristic(content: &str) -> MemoryType {
         || lower.contains("favorite")
         || lower.contains("rather than")
         || lower.contains("instead of")
+        || lower.contains("i'd rather")
+        || lower.contains("i don't like")
+        || lower.contains("please always")
+        || lower.contains("please never")
+        || lower.contains("would rather")
     {
         return MemoryType::Preference;
     }
@@ -82,6 +93,11 @@ pub fn classify_heuristic(content: &str) -> MemoryType {
         || lower.contains("based on this")
         || lower.contains("likely because")
         || lower.contains("probably")
+        || lower.contains("seems like")
+        || lower.contains("appears to be")
+        || lower.contains("might be")
+        || lower.contains("could be")
+        || lower.contains("looks like")
     {
         return MemoryType::Inference;
     }
@@ -96,6 +112,14 @@ pub fn classify_heuristic(content: &str) -> MemoryType {
         || lower.contains("released")
         || lower.contains("incident")
         || lower.contains("outage")
+        || lower.contains("updated")
+        || lower.contains("installed")
+        || lower.contains("migrated")
+        || lower.contains("crashed")
+        || lower.contains("fixed")
+        || lower.contains("merged")
+        || lower.contains("pushed")
+        || lower.contains("shipped")
     {
         return MemoryType::Event;
     }
@@ -110,6 +134,12 @@ pub fn classify_heuristic(content: &str) -> MemoryType {
         || lower.contains("specification:")
         || lower.contains("the api")
         || lower.contains("version is")
+        || lower.contains("runs on")
+        || lower.contains("uses")
+        || lower.contains("is built with")
+        || lower.contains("is located at")
+        || lower.contains("the url")
+        || lower.contains("the port")
     {
         return MemoryType::Fact;
     }
@@ -177,6 +207,86 @@ mod tests {
         );
         assert_eq!(
             classify_heuristic("The API version is 3.1"),
+            MemoryType::Fact
+        );
+    }
+
+    #[test]
+    fn classify_decision_new_patterns() {
+        assert_eq!(
+            classify_heuristic("We chose to adopt microservices"),
+            MemoryType::Decision
+        );
+        assert_eq!(
+            classify_heuristic("Switching to a new database engine"),
+            MemoryType::Decision
+        );
+        assert_eq!(
+            classify_heuristic("Adopting Kubernetes for orchestration"),
+            MemoryType::Decision
+        );
+    }
+
+    #[test]
+    fn classify_preference_new_patterns() {
+        assert_eq!(
+            classify_heuristic("I'd rather use vim than emacs"),
+            MemoryType::Preference
+        );
+        assert_eq!(
+            classify_heuristic("Please never auto-format my code"),
+            MemoryType::Preference
+        );
+        assert_eq!(
+            classify_heuristic("I don't like verbose logging"),
+            MemoryType::Preference
+        );
+    }
+
+    #[test]
+    fn classify_inference_new_patterns() {
+        assert_eq!(
+            classify_heuristic("It seems like the cache is stale"),
+            MemoryType::Inference
+        );
+        assert_eq!(
+            classify_heuristic("This could be a race condition"),
+            MemoryType::Inference
+        );
+        assert_eq!(
+            classify_heuristic("Looks like the timeout is too low"),
+            MemoryType::Inference
+        );
+    }
+
+    #[test]
+    fn classify_event_new_patterns() {
+        assert_eq!(
+            classify_heuristic("The server crashed at 3am"),
+            MemoryType::Event
+        );
+        assert_eq!(
+            classify_heuristic("We merged the auth refactor PR"),
+            MemoryType::Event
+        );
+        assert_eq!(
+            classify_heuristic("Shipped the new landing page"),
+            MemoryType::Event
+        );
+    }
+
+    #[test]
+    fn classify_fact_new_patterns() {
+        assert_eq!(
+            classify_heuristic("The service runs on port 8080"),
+            MemoryType::Fact
+        );
+        assert_eq!(
+            classify_heuristic("The project is built with Rust"),
+            MemoryType::Fact
+        );
+        assert_eq!(
+            classify_heuristic("The URL for the dashboard is /admin"),
             MemoryType::Fact
         );
     }

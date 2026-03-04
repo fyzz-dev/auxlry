@@ -56,7 +56,7 @@ pub struct MemoryEdge {
 }
 
 /// Memory metadata from SQLite.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct MemoryMetadata {
     pub id: String,
     pub memory_type: String,
@@ -115,6 +115,50 @@ impl Database {
         Ok(edges)
     }
 
+    /// Get all memory metadata records.
+    pub async fn all_memory_metadata(&self) -> Result<Vec<MemoryMetadata>> {
+        let rows = sqlx::query(
+            "SELECT id, memory_type, access_count, last_accessed_at, created_at FROM memory_metadata",
+        )
+        .fetch_all(self.pool())
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|row| MemoryMetadata {
+                id: row.get("id"),
+                memory_type: row.get("memory_type"),
+                access_count: row.get("access_count"),
+                last_accessed_at: row.get("last_accessed_at"),
+                created_at: row.get("created_at"),
+            })
+            .collect())
+    }
+
+    /// Get all edges in the graph.
+    pub async fn all_edges(&self) -> Result<Vec<MemoryEdge>> {
+        let rows = sqlx::query(
+            "SELECT id, source_id, target_id, relation_type, weight, created_at FROM memory_edges",
+        )
+        .fetch_all(self.pool())
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let rt: String = row.get("relation_type");
+                MemoryEdge {
+                    id: row.get("id"),
+                    source_id: row.get("source_id"),
+                    target_id: row.get("target_id"),
+                    relation_type: EdgeType::from_str(&rt).unwrap_or(EdgeType::RelatedTo),
+                    weight: row.get("weight"),
+                    created_at: row.get("created_at"),
+                }
+            })
+            .collect())
+    }
+
     /// Count edges touching a memory.
     pub async fn edge_count(&self, memory_id: &str) -> Result<i64> {
         let row = sqlx::query(
@@ -153,6 +197,38 @@ impl Database {
         .execute(self.pool())
         .await
         .context("failed to init memory metadata")?;
+        Ok(())
+    }
+
+    /// Delete memory metadata by ID.
+    pub async fn delete_memory_metadata(&self, memory_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM memory_metadata WHERE id = ?")
+            .bind(memory_id)
+            .execute(self.pool())
+            .await
+            .context("failed to delete memory metadata")?;
+        Ok(())
+    }
+
+    /// Delete all edges touching a memory (as source or target).
+    pub async fn delete_edges_for(&self, memory_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM memory_edges WHERE source_id = ? OR target_id = ?")
+            .bind(memory_id)
+            .bind(memory_id)
+            .execute(self.pool())
+            .await
+            .context("failed to delete edges")?;
+        Ok(())
+    }
+
+    /// Update the memory_type for a memory.
+    pub async fn update_memory_type(&self, memory_id: &str, new_type: &str) -> Result<()> {
+        sqlx::query("UPDATE memory_metadata SET memory_type = ? WHERE id = ?")
+            .bind(new_type)
+            .bind(memory_id)
+            .execute(self.pool())
+            .await
+            .context("failed to update memory type")?;
         Ok(())
     }
 
@@ -245,6 +321,48 @@ mod tests {
             .unwrap();
 
         assert_eq!(db.edge_count("m1").await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn delete_memory_metadata_works() {
+        let db = temp_db().await;
+        db.init_memory_metadata("m1", "fact").await.unwrap();
+        assert!(db.memory_metadata("m1").await.is_ok());
+
+        db.delete_memory_metadata("m1").await.unwrap();
+        assert!(db.memory_metadata("m1").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_edges_for_works() {
+        let db = temp_db().await;
+        db.init_memory_metadata("m1", "fact").await.unwrap();
+        db.init_memory_metadata("m2", "fact").await.unwrap();
+        db.init_memory_metadata("m3", "fact").await.unwrap();
+
+        db.create_edge("m1", "m2", EdgeType::RelatedTo, 1.0).await.unwrap();
+        db.create_edge("m3", "m1", EdgeType::CausedBy, 1.0).await.unwrap();
+
+        assert_eq!(db.edge_count("m1").await.unwrap(), 2);
+
+        db.delete_edges_for("m1").await.unwrap();
+        assert_eq!(db.edge_count("m1").await.unwrap(), 0);
+        // m2 and m3 edges involving m1 are also gone
+        assert_eq!(db.edge_count("m2").await.unwrap(), 0);
+        assert_eq!(db.edge_count("m3").await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn update_memory_type_works() {
+        let db = temp_db().await;
+        db.init_memory_metadata("m1", "fact").await.unwrap();
+
+        let meta = db.memory_metadata("m1").await.unwrap();
+        assert_eq!(meta.memory_type, "fact");
+
+        db.update_memory_type("m1", "decision").await.unwrap();
+        let meta = db.memory_metadata("m1").await.unwrap();
+        assert_eq!(meta.memory_type, "decision");
     }
 
     #[tokio::test]

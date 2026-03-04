@@ -201,6 +201,146 @@ impl Tool for MemoryStoreTool {
     }
 }
 
+// ── MemoryUpdateTool ────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct MemoryUpdateArgs {
+    pub id: String,
+    pub content: String,
+    #[serde(default)]
+    pub memory_type: Option<String>,
+}
+
+/// Tool for updating an existing memory (re-embeds content).
+pub struct MemoryUpdateTool {
+    pub memory: Arc<MemoryStore>,
+    pub db: Database,
+    pub bus: EventBus,
+}
+
+impl Tool for MemoryUpdateTool {
+    const NAME: &'static str = "memory_update";
+    type Error = MemoryToolError;
+    type Args = MemoryUpdateArgs;
+    type Output = String;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: "memory_update".to_string(),
+            description: "Update an existing memory's content. The old embedding is replaced with \
+                a new one computed from the updated content. Use this when a fact has changed, \
+                content needs correction, or information needs to be refined. Provide the memory ID \
+                from a previous search result."
+                .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "The ID of the memory to update (from search results)"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The new content for this memory"
+                    },
+                    "memory_type": {
+                        "type": "string",
+                        "enum": ["fact", "decision", "inference", "preference", "observation", "event"],
+                        "description": "Optional: change the memory type",
+                        "nullable": true
+                    }
+                },
+                "required": ["id", "content"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let memory_type = args
+            .memory_type
+            .as_deref()
+            .and_then(MemoryType::from_str)
+            .unwrap_or_else(|| classify_heuristic(&args.content));
+
+        self.memory
+            .update(&args.id, &args.content, None, memory_type)
+            .await
+            .map_err(|e| MemoryToolError(e.to_string()))?;
+
+        self.db
+            .update_memory_type(&args.id, memory_type.as_str())
+            .await
+            .map_err(|e| MemoryToolError(e.to_string()))?;
+
+        self.bus.publish(Event::new(EventPayload::MemoryStored {
+            key: args.id.clone(),
+            summary: args.content.chars().take(100).collect(),
+        }));
+
+        Ok(format!("Updated memory {}", args.id))
+    }
+}
+
+// ── MemoryDeleteTool ────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct MemoryDeleteArgs {
+    pub id: String,
+}
+
+/// Tool for deleting a memory and its graph edges.
+pub struct MemoryDeleteTool {
+    pub memory: Arc<MemoryStore>,
+    pub db: Database,
+}
+
+impl Tool for MemoryDeleteTool {
+    const NAME: &'static str = "memory_delete";
+    type Error = MemoryToolError;
+    type Args = MemoryDeleteArgs;
+    type Output = String;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: "memory_delete".to_string(),
+            description: "Delete a memory and all its graph edges. Use this when a memory is \
+                completely wrong or no longer relevant. Prefer using a 'supersedes' edge over \
+                deletion when the old info is still useful context. Provide the memory ID from \
+                a previous search result."
+                .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "The ID of the memory to delete (from search results)"
+                    }
+                },
+                "required": ["id"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        self.memory
+            .delete(&args.id)
+            .await
+            .map_err(|e| MemoryToolError(e.to_string()))?;
+
+        self.db
+            .delete_edges_for(&args.id)
+            .await
+            .map_err(|e| MemoryToolError(e.to_string()))?;
+
+        self.db
+            .delete_memory_metadata(&args.id)
+            .await
+            .map_err(|e| MemoryToolError(e.to_string()))?;
+
+        Ok(format!("Deleted memory {} and its edges", args.id))
+    }
+}
+
 // ── CreateEdgeTool ──────────────────────────────────────────────────────
 
 #[derive(Deserialize)]

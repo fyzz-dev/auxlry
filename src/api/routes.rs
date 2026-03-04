@@ -4,13 +4,15 @@ use std::sync::Arc;
 use axum::{
     Router,
     extract::{Query, State},
+    http::{StatusCode, Uri, header},
     response::{
-        Json,
+        IntoResponse, Json,
         sse::{Event as SseEvent, KeepAlive, Sse},
     },
     routing::{get, post},
 };
 use futures::stream::Stream;
+use rust_embed::Embed;
 use serde::Deserialize;
 use serde_json::json;
 use tokio_stream::wrappers::BroadcastStream;
@@ -20,6 +22,10 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use crate::core::state::AppState;
 
+#[derive(Embed)]
+#[folder = "dashboard/dist/"]
+struct DashboardAssets;
+
 #[derive(OpenApi)]
 #[openapi(
     paths(health, events_stream, recent_events, dashboard_status, config_info, memory_search, memory_store, memory_create_edge, memory_get_edges),
@@ -28,28 +34,71 @@ use crate::core::state::AppState;
 struct ApiDoc;
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let api = Router::new()
         .route("/health", get(health))
         .route("/events", get(events_stream))
         .route("/events/recent", get(recent_events))
-        .route("/dashboard/status", get(dashboard_status))
+        .route("/status", get(dashboard_status))
+        .route("/memory-actions", get(dashboard_memory_actions))
+        .route("/agent-spawns", get(dashboard_agent_spawns))
+        .route("/message-heatmap", get(dashboard_message_heatmap))
+        .route("/memory-categories", get(dashboard_memory_categories))
         .route("/config", get(config_info))
         .route("/memories/search", get(memory_search))
         .route("/memories", post(memory_store))
         .route("/memories/edges", post(memory_create_edge))
         .route("/memories/{id}/edges", get(memory_get_edges))
+        .route("/memories/graph", get(memories_graph));
+
+    Router::new()
+        .nest("/api", api)
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
+        .fallback(static_handler)
         .with_state(Arc::new(state))
 }
 
+// ─── Static file serving (SPA fallback) ───
+
+async fn static_handler(uri: Uri) -> impl IntoResponse {
+    let path = uri.path().trim_start_matches('/');
+
+    // Try exact file first
+    if !path.is_empty() {
+        if let Some(content) = DashboardAssets::get(path) {
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            return (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, mime.as_ref())],
+                content.data.into_owned(),
+            )
+                .into_response();
+        }
+    }
+
+    // SPA fallback: serve index.html
+    match DashboardAssets::get("index.html") {
+        Some(content) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/html")],
+            content.data.into_owned(),
+        )
+            .into_response(),
+        None => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
+// ─── Health ───
+
 /// Health check endpoint.
-#[utoipa::path(get, path = "/health", responses((status = 200, description = "OK")))]
+#[utoipa::path(get, path = "/api/health", responses((status = 200, description = "OK")))]
 async fn health() -> Json<serde_json::Value> {
     Json(json!({"status": "ok"}))
 }
 
+// ─── Events ───
+
 /// SSE stream of real-time events.
-#[utoipa::path(get, path = "/events", responses((status = 200, description = "SSE event stream")))]
+#[utoipa::path(get, path = "/api/events", responses((status = 200, description = "SSE event stream")))]
 async fn events_stream(
     State(state): State<Arc<AppState>>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
@@ -65,7 +114,7 @@ async fn events_stream(
 }
 
 /// Get recent events from the database.
-#[utoipa::path(get, path = "/events/recent", responses((status = 200, description = "Recent events")))]
+#[utoipa::path(get, path = "/api/events/recent", responses((status = 200, description = "Recent events")))]
 async fn recent_events(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
@@ -75,8 +124,10 @@ async fn recent_events(
     }
 }
 
+// ─── Dashboard data endpoints ───
+
 /// Dashboard status — overview of the system.
-#[utoipa::path(get, path = "/dashboard/status", responses((status = 200, description = "System status")))]
+#[utoipa::path(get, path = "/api/status", responses((status = 200, description = "System status")))]
 async fn dashboard_status(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
@@ -96,8 +147,125 @@ async fn dashboard_status(
     }))
 }
 
+async fn dashboard_memory_actions(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    match state.db.events_by_day(&["memory_stored"], 30).await {
+        Ok(rows) => {
+            let data: Vec<_> = rows
+                .iter()
+                .map(|(day, kind, count)| json!({"date": day, "kind": kind, "count": count}))
+                .collect();
+            Json(json!({"data": data}))
+        }
+        Err(e) => Json(json!({"error": e.to_string()})),
+    }
+}
+
+async fn dashboard_agent_spawns(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    match state
+        .db
+        .events_by_day(&["synapse_started", "operator_started"], 30)
+        .await
+    {
+        Ok(rows) => {
+            let data: Vec<_> = rows
+                .iter()
+                .map(|(day, kind, count)| json!({"date": day, "kind": kind, "count": count}))
+                .collect();
+            Json(json!({"data": data}))
+        }
+        Err(e) => Json(json!({"error": e.to_string()})),
+    }
+}
+
+async fn dashboard_message_heatmap(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    match state.db.messages_per_day_this_month().await {
+        Ok(rows) => {
+            let data: Vec<_> = rows
+                .iter()
+                .map(|(day, count)| json!({"date": day, "count": count}))
+                .collect();
+            Json(json!({"data": data}))
+        }
+        Err(e) => Json(json!({"error": e.to_string()})),
+    }
+}
+
+async fn dashboard_memory_categories(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    match state.db.memory_counts_by_type().await {
+        Ok(rows) => {
+            let data: Vec<_> = rows
+                .iter()
+                .map(|(typ, count)| json!({"type": typ, "count": count}))
+                .collect();
+            Json(json!({"data": data}))
+        }
+        Err(e) => Json(json!({"error": e.to_string()})),
+    }
+}
+
+async fn memories_graph(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let metadata = match state.db.all_memory_metadata().await {
+        Ok(m) => m,
+        Err(e) => return Json(json!({"error": e.to_string()})),
+    };
+    let edges = match state.db.all_edges().await {
+        Ok(e) => e,
+        Err(e) => return Json(json!({"error": e.to_string()})),
+    };
+
+    // Fetch content from vector store if available
+    let ids: Vec<String> = metadata.iter().map(|m| m.id.clone()).collect();
+    let mut content_map = std::collections::HashMap::new();
+    if let Some(ref memory) = state.memory {
+        if let Ok(results) = memory.fetch_by_ids(&ids).await {
+            for r in results {
+                content_map.insert(r.id.clone(), r.content.clone());
+            }
+        }
+    }
+
+    let nodes: Vec<_> = metadata
+        .iter()
+        .map(|m| {
+            json!({
+                "id": m.id,
+                "memory_type": m.memory_type,
+                "access_count": m.access_count,
+                "content": content_map.get(&m.id).cloned().unwrap_or_default(),
+                "created_at": m.created_at,
+            })
+        })
+        .collect();
+
+    let links: Vec<_> = edges
+        .iter()
+        .map(|e| {
+            json!({
+                "source": e.source_id,
+                "target": e.target_id,
+                "relation_type": e.relation_type,
+                "weight": e.weight,
+            })
+        })
+        .collect();
+
+    Json(json!({"nodes": nodes, "links": links}))
+}
+
+// ─── Config ───
+
 /// Get current configuration (sanitized — no secrets).
-#[utoipa::path(get, path = "/config", responses((status = 200, description = "Current config")))]
+#[utoipa::path(get, path = "/api/config", responses((status = 200, description = "Current config")))]
 async fn config_info(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
@@ -122,6 +290,8 @@ async fn config_info(
     }))
 }
 
+// ─── Memory endpoints ───
+
 #[derive(Deserialize)]
 struct MemorySearchQuery {
     q: String,
@@ -142,7 +312,7 @@ fn default_limit() -> usize {
 /// Search memories with hybrid vector + graph search.
 #[utoipa::path(
     get,
-    path = "/memories/search",
+    path = "/api/memories/search",
     params(
         ("q" = String, Query, description = "Search query"),
         ("limit" = Option<usize>, Query, description = "Max results"),
@@ -194,7 +364,7 @@ struct MemoryStoreRequest {
 /// Store a new memory with optional type classification.
 #[utoipa::path(
     post,
-    path = "/memories",
+    path = "/api/memories",
     responses((status = 200, description = "Memory stored"))
 )]
 async fn memory_store(
@@ -245,7 +415,7 @@ fn default_edge_weight() -> f64 {
 /// Create a typed edge between two memories.
 #[utoipa::path(
     post,
-    path = "/memories/edges",
+    path = "/api/memories/edges",
     responses((status = 200, description = "Edge created"))
 )]
 async fn memory_create_edge(
@@ -271,7 +441,7 @@ async fn memory_create_edge(
 /// Get all edges for a memory.
 #[utoipa::path(
     get,
-    path = "/memories/{id}/edges",
+    path = "/api/memories/{id}/edges",
     params(("id" = String, description = "Memory ID")),
     responses((status = 200, description = "Edges for memory"))
 )]
@@ -314,7 +484,7 @@ mod tests {
         let resp = app
             .oneshot(
                 Request::builder()
-                    .uri("/health")
+                    .uri("/api/health")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -332,7 +502,7 @@ mod tests {
         let resp = app
             .oneshot(
                 Request::builder()
-                    .uri("/dashboard/status")
+                    .uri("/api/status")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -350,7 +520,7 @@ mod tests {
         let resp = app
             .oneshot(
                 Request::builder()
-                    .uri("/config")
+                    .uri("/api/config")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -368,7 +538,7 @@ mod tests {
         let resp = app
             .oneshot(
                 Request::builder()
-                    .uri("/events/recent")
+                    .uri("/api/events/recent")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -386,7 +556,97 @@ mod tests {
         let resp = app
             .oneshot(
                 Request::builder()
-                    .uri("/memories/search?q=test&limit=5")
+                    .uri("/api/memories/search?q=test&limit=5")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn dashboard_memory_actions_endpoint() {
+        let state = test_state().await;
+        let app = router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/memory-actions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn dashboard_agent_spawns_endpoint() {
+        let state = test_state().await;
+        let app = router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/agent-spawns")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn dashboard_message_heatmap_endpoint() {
+        let state = test_state().await;
+        let app = router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/message-heatmap")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn dashboard_memory_categories_endpoint() {
+        let state = test_state().await;
+        let app = router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/memory-categories")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn memories_graph_endpoint() {
+        let state = test_state().await;
+        let app = router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/memories/graph")
                     .body(Body::empty())
                     .unwrap(),
             )

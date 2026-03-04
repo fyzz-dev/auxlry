@@ -126,6 +126,33 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// Update a memory: delete old row, re-embed content, insert new row with same ID.
+    pub async fn update(
+        &self,
+        id: &str,
+        content: &str,
+        source: Option<&str>,
+        memory_type: MemoryType,
+    ) -> Result<()> {
+        let table = self.db.open_table(TABLE_NAME).execute().await?;
+        table
+            .delete(&format!("id = '{}'", id.replace('\'', "''")))
+            .await
+            .context("failed to delete old memory for update")?;
+
+        self.store(id, content, source, memory_type).await
+    }
+
+    /// Delete a memory by ID from LanceDB.
+    pub async fn delete(&self, id: &str) -> Result<()> {
+        let table = self.db.open_table(TABLE_NAME).execute().await?;
+        table
+            .delete(&format!("id = '{}'", id.replace('\'', "''")))
+            .await
+            .context("failed to delete memory")?;
+        Ok(())
+    }
+
     /// Fetch memories by their IDs from LanceDB.
     pub async fn fetch_by_ids(&self, ids: &[String]) -> Result<Vec<super::search::SearchResult>> {
         if ids.is_empty() {

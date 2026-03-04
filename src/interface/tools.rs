@@ -119,8 +119,24 @@ impl Tool for DelegateSynapseTool {
 
         let memory_ctx = self.ctx.memory_context(&args.task).await;
 
+        // Fetch recent conversation history for context
+        let conversation = if let Some(ref db) = self.ctx.db {
+            db.get_recent_messages(&self.ctx.interface_name, &self.ctx.channel, 20)
+                .await
+                .ok()
+                .filter(|msgs| !msgs.is_empty())
+                .map(|msgs| {
+                    msgs.iter()
+                        .map(|m| format!("{}: {}", m.author, m.content))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+        } else {
+            None
+        };
+
         self.synapse
-            .run(&args.task, memory_ctx.as_deref())
+            .run(&args.task, memory_ctx.as_deref(), conversation.as_deref())
             .await
             .map_err(|e| InterfaceToolError(e.to_string()))
     }
