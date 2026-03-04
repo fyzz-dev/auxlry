@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use anyhow::{Context, Result};
 use quinn::Connection;
 use tracing::{error, info, warn};
@@ -11,6 +12,8 @@ use crate::node::executor::NodeExecutor;
 use crate::node::linking;
 use crate::node::local::LocalNode;
 use crate::node::protocol::ProtocolMessage;
+use crate::node::registry::NodeRegistry;
+use crate::node::remote::RemoteNode;
 use crate::storage::database::Database;
 
 /// Handle a single inbound QUIC connection from a remote node.
@@ -19,6 +22,7 @@ pub async fn handle_connection(
     db: Database,
     bus: EventBus,
     workspace: PathBuf,
+    registry: NodeRegistry,
 ) {
     let remote = conn.remote_address();
     info!(%remote, "new QUIC connection");
@@ -34,6 +38,14 @@ pub async fn handle_connection(
     };
 
     info!(node = %node_name, %remote, "node authenticated");
+
+    // Register a RemoteNode so the operator can dispatch work to it
+    let remote_node = Arc::new(RemoteNode::new(node_name.clone(), conn.clone()));
+    registry
+        .register(node_name.clone(), remote_node as Arc<dyn NodeExecutor>)
+        .await;
+    info!(node = %node_name, "registered remote node in registry");
+
     bus.publish(Event::new(EventPayload::NodeConnected {
         node: node_name.clone(),
     }));
@@ -78,6 +90,10 @@ pub async fn handle_connection(
         }
         let _ = send.finish();
     }
+
+    // Unregister the node from the registry
+    registry.unregister(&node_name).await;
+    info!(node = %node_name, "unregistered remote node from registry");
 
     bus.publish(Event::new(EventPayload::NodeDisconnected {
         node: node_name,

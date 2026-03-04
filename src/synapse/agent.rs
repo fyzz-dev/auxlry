@@ -51,6 +51,7 @@ impl SynapseAgent {
             .preamble(system_prompt)
             .tool(DelegateOperatorTool {
                 operator: self.operator.clone(),
+                registry: self.state.nodes.clone(),
             });
 
         if let Some(ref memory) = self.state.memory {
@@ -104,12 +105,14 @@ impl SynapseAgent {
                 task: task.to_string(),
             }));
 
+        let available_nodes = self.state.nodes.list().await;
         let system_prompt = self.prompt_router.render(
             "synapse_default",
             minijinja::context! {
                 task_description => task,
                 memory_context => memory_context.unwrap_or(""),
                 conversation_history => conversation.unwrap_or(""),
+                available_nodes => available_nodes,
             },
         )?;
 

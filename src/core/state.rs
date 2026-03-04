@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::config::types::Config;
 use crate::events::bus::EventBus;
 use crate::memory::store::MemoryStore;
+use crate::node::registry::NodeRegistry;
 use crate::storage::database::Database;
 use crate::storage::paths::AuxlryPaths;
 
@@ -14,6 +15,7 @@ pub struct AppState {
     pub db: Database,
     pub paths: AuxlryPaths,
     pub memory: Option<Arc<MemoryStore>>,
+    pub nodes: NodeRegistry,
 }
 
 impl AppState {
@@ -23,6 +25,7 @@ impl AppState {
         db: Database,
         paths: AuxlryPaths,
         memory: Option<Arc<MemoryStore>>,
+        nodes: NodeRegistry,
     ) -> Self {
         Self {
             config: Arc::new(config),
@@ -30,6 +33,7 @@ impl AppState {
             db,
             paths,
             memory,
+            nodes,
         }
     }
 }

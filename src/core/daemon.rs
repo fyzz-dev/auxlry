@@ -23,6 +23,7 @@ use crate::network::hole_punch;
 use crate::network::quic;
 use crate::node::handler;
 use crate::node::local::LocalNode;
+use crate::node::registry::NodeRegistry;
 use crate::operator::agent::OperatorAgent;
 use crate::storage::database::Database;
 use crate::storage::paths::AuxlryPaths;
@@ -68,8 +69,11 @@ pub async fn run(paths: AuxlryPaths) -> Result<()> {
     // Create cancellation token for graceful shutdown
     let shutdown = CancellationToken::new();
 
+    // Create node registry (nodes registered after state creation)
+    let registry = NodeRegistry::new();
+
     // Build shared state
-    let state = AppState::new(config.clone(), bus.clone(), db.clone(), paths.clone(), memory);
+    let state = AppState::new(config.clone(), bus.clone(), db.clone(), paths.clone(), memory, registry.clone());
 
     // Publish CoreStarted
     bus.publish(Event::new(EventPayload::CoreStarted));
@@ -169,7 +173,7 @@ pub async fn run(paths: AuxlryPaths) -> Result<()> {
         });
     }
 
-    // Create local node from config
+    // Create local node and register it
     let local_node: Arc<dyn crate::node::executor::NodeExecutor> = {
         let workspace = paths.workspace_dir.clone();
         let node_cfg = config.nodes.first();
@@ -179,10 +183,14 @@ pub async fn run(paths: AuxlryPaths) -> Result<()> {
         };
         Arc::new(LocalNode::new(name, mode, Some(workspace)))
     };
+    registry
+        .register(local_node.name().to_string(), local_node.clone())
+        .await;
+    info!(node = local_node.name(), "registered local node");
 
     // Create the agent hierarchy: Operator → Synapse → Interface
     // Each layer can delegate to the one below via rig tool calling.
-    let operator = match OperatorAgent::new(state.clone(), local_node.clone()) {
+    let operator = match OperatorAgent::new(state.clone(), registry.clone()) {
         Ok(o) => Arc::new(o),
         Err(e) => {
             error!(error = %e, "failed to create operator agent");
@@ -231,6 +239,7 @@ pub async fn run(paths: AuxlryPaths) -> Result<()> {
                 let db = db.clone();
                 let bus = bus.clone();
                 let workspace = paths.workspace_dir.clone();
+                let quic_registry = registry.clone();
                 let token = shutdown.clone();
                 tokio::spawn(async move {
                     loop {
@@ -248,8 +257,9 @@ pub async fn run(paths: AuxlryPaths) -> Result<()> {
                                         let db = db.clone();
                                         let bus = bus.clone();
                                         let workspace = workspace.clone();
+                                        let reg = quic_registry.clone();
                                         tokio::spawn(async move {
-                                            handler::handle_connection(conn, db, bus, workspace).await;
+                                            handler::handle_connection(conn, db, bus, workspace, reg).await;
                                         });
                                     }
                                     None => {

@@ -12,6 +12,7 @@ use crate::events::types::{Event, EventPayload};
 use crate::interface::router::PromptRouter;
 use crate::memory::tools::MemorySearchTool;
 use crate::node::executor::NodeExecutor;
+use crate::node::registry::NodeRegistry;
 use crate::operator::tools::*;
 
 const MAX_RETRIES: usize = 2;
@@ -19,18 +20,18 @@ const MAX_RETRIES: usize = 2;
 /// The Operator agent: executes actions on nodes using rig tool calling.
 pub struct OperatorAgent {
     state: AppState,
-    node: Arc<dyn NodeExecutor>,
+    nodes: NodeRegistry,
     prompt_router: PromptRouter,
     semaphore: Arc<Semaphore>,
 }
 
 impl OperatorAgent {
-    pub fn new(state: AppState, node: Arc<dyn NodeExecutor>) -> Result<Self> {
+    pub fn new(state: AppState, nodes: NodeRegistry) -> Result<Self> {
         let max = state.config.concurrency.max_operators;
         let prompt_router = PromptRouter::new(&state.config.locale)?;
         Ok(Self {
             state,
-            node,
+            nodes,
             prompt_router,
             semaphore: Arc::new(Semaphore::new(max)),
         })
@@ -42,8 +43,8 @@ impl OperatorAgent {
         client: &rig::providers::openrouter::Client,
         model: &str,
         system_prompt: &str,
+        node: Arc<dyn NodeExecutor>,
     ) -> rig::agent::Agent<rig::providers::openrouter::CompletionModel> {
-        let node = self.node.clone();
         let mut agent_builder = client
             .agent(model)
             .preamble(system_prompt)
@@ -63,13 +64,29 @@ impl OperatorAgent {
         agent_builder.build()
     }
 
+    /// Resolve a node by name, falling back to the first registered node.
+    async fn resolve_node(&self, node_name: Option<&str>) -> Result<Arc<dyn NodeExecutor>> {
+        if let Some(name) = node_name {
+            if let Some(node) = self.nodes.get(name).await {
+                return Ok(node);
+            }
+            anyhow::bail!("node '{}' not found in registry", name);
+        }
+        self.nodes
+            .first()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("no nodes registered"))
+    }
+
     /// Run an operator task: build a rig agent with node tools and let it execute.
-    pub async fn run(&self, task: &str) -> Result<String> {
+    pub async fn run(&self, task: &str, node_name: Option<&str>) -> Result<String> {
         let _permit = self
             .semaphore
             .acquire()
             .await
             .context("semaphore closed")?;
+
+        let node = self.resolve_node(node_name).await?;
 
         let op_id = Uuid::new_v4().to_string();
         let max_turns = self.state.config.concurrency.max_operator_steps;
@@ -79,14 +96,14 @@ impl OperatorAgent {
             .publish(Event::new(EventPayload::OperatorStarted {
                 operator_id: op_id.clone(),
                 task: task.to_string(),
-                node: self.node.name().to_string(),
+                node: node.name().to_string(),
             }));
 
         let system_prompt = self.prompt_router.render(
             "operator_default",
             minijinja::context! {
                 task_description => task,
-                node_name => self.node.name(),
+                node_name => node.name(),
             },
         )?;
 
@@ -110,7 +127,7 @@ impl OperatorAgent {
                 tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
             }
 
-            let agent = self.build_agent(&client, model, &system_prompt);
+            let agent = self.build_agent(&client, model, &system_prompt, node.clone());
             let result: Result<String, _> = agent.prompt(task).max_turns(max_turns).await;
 
             match result {

@@ -64,6 +64,15 @@ Use the right type when storing — it improves search and recall:
 - Don't loop. Gather information, think, conclude. You have a limited number of turns.
 - If you can't determine the answer, say what you found and what's still unclear. Don't fabricate conclusions.
 
+{% if available_nodes and available_nodes | length > 1 %}
+## Available Nodes
+{% for node in available_nodes %}
+- **{{ node }}**{% if loop.first %} (default — this machine){% endif %}
+
+{% endfor %}
+When delegating to an operator, specify the `node` parameter if the task should run on a specific machine. Default to the local node if no machine is mentioned or implied.
+{% endif %}
+
 {% if conversation_history %}
 ## Recent Conversation
 {{ conversation_history }}

@@ -1,4 +1,9 @@
-import { createRootRoute, Link, Outlet, useMatches } from "@tanstack/react-router";
+import {
+  createRootRoute,
+  Link,
+  Outlet,
+  useMatches,
+} from "@tanstack/react-router";
 import { LayoutDashboard, Brain, Settings } from "lucide-react";
 import {
   Sidebar,
@@ -38,7 +43,11 @@ function StatusIndicator() {
   return (
     <SidebarMenu>
       <SidebarMenuItem>
-        <SidebarMenuButton size="sm" className="cursor-default" tooltip="System status">
+        <SidebarMenuButton
+          size="sm"
+          className="cursor-default"
+          tooltip="System status"
+        >
           <span
             className={`size-2 shrink-0 rounded-full ${isOnline ? "bg-emerald-500 animate-pulse" : "bg-destructive"}`}
           />
@@ -59,7 +68,7 @@ function AppSidebar() {
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" asChild>
               <Link to="/">
-                <div className="bg-sidebar-primary text-sidebar-primary-foreground flex aspect-square size-8 items-center justify-center rounded-lg text-sm font-bold">
+                <div className="bg-sidebar-primary text-background flex aspect-square size-8 items-center justify-center rounded-lg text-sm font-bold">
                   ax
                 </div>
                 <div className="grid flex-1 text-left text-sm leading-tight">

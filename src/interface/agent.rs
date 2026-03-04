@@ -62,6 +62,7 @@ impl InterfaceAgent {
             .tool(DelegateOperatorTool {
                 operator: self.operator.clone(),
                 ctx: ctx.clone(),
+                registry: self.state.nodes.clone(),
             })
             .build()
     }
@@ -79,10 +80,12 @@ impl InterfaceAgent {
             .collect::<Vec<_>>()
             .join("\n");
 
+        let available_nodes = self.state.nodes.list().await;
         let system_prompt = self.prompt_router.render(
             "interface_default",
             minijinja::context! {
                 adapter_name => &batch.interface,
+                available_nodes => available_nodes,
             },
         )?;
 

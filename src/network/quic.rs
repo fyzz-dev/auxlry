@@ -1,8 +1,9 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
-use quinn::{Endpoint, ServerConfig};
+use quinn::{Endpoint, ServerConfig, TransportConfig};
 use rcgen::generate_simple_self_signed;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
@@ -26,10 +27,11 @@ pub fn server_endpoint(bind_addr: SocketAddr) -> Result<Endpoint> {
         .with_single_cert(certs, key)
         .context("TLS config failed")?;
 
-    let server_config = ServerConfig::with_crypto(Arc::new(
+    let mut server_config = ServerConfig::with_crypto(Arc::new(
         quinn::crypto::rustls::QuicServerConfig::try_from(server_crypto)
             .context("QUIC server config failed")?,
     ));
+    server_config.transport_config(Arc::new(keep_alive_transport()));
 
     let endpoint =
         Endpoint::server(server_config, bind_addr).context("failed to bind QUIC endpoint")?;
@@ -47,16 +49,25 @@ pub fn client_endpoint() -> Result<Endpoint> {
         .with_custom_certificate_verifier(Arc::new(SkipVerification))
         .with_no_client_auth();
 
-    let client_config = quinn::ClientConfig::new(Arc::new(
+    let mut client_config = quinn::ClientConfig::new(Arc::new(
         quinn::crypto::rustls::QuicClientConfig::try_from(client_crypto)
             .context("QUIC client config failed")?,
     ));
+    client_config.transport_config(Arc::new(keep_alive_transport()));
 
     let mut endpoint =
         Endpoint::client("0.0.0.0:0".parse()?).context("failed to create client endpoint")?;
     endpoint.set_default_client_config(client_config);
 
     Ok(endpoint)
+}
+
+/// Transport config with keep-alive to prevent idle timeout.
+fn keep_alive_transport() -> TransportConfig {
+    let mut transport = TransportConfig::default();
+    transport.keep_alive_interval(Some(Duration::from_secs(15)));
+    transport.max_idle_timeout(Some(Duration::from_secs(300).try_into().unwrap()));
+    transport
 }
 
 /// Certificate verifier that accepts any certificate (for self-signed certs).

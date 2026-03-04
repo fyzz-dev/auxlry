@@ -473,7 +473,7 @@ mod tests {
         paths.ensure_dirs().unwrap();
         let db_path = paths.database.to_string_lossy().to_string();
         let db = Database::open(&db_path).await.unwrap();
-        AppState::new(Config::default(), EventBus::new(), db, paths, None)
+        AppState::new(Config::default(), EventBus::new(), db, paths, None, crate::node::registry::NodeRegistry::new())
     }
 
     #[tokio::test]

@@ -41,6 +41,15 @@ If the user asks for multiple things, handle them in a natural flow. Delegate wh
 - Don't overuse emoji
 - If you don't know something and can't delegate to find out, say so honestly
 
+{% if available_nodes and available_nodes | length > 1 %}
+## Available Nodes
+{% for node in available_nodes %}
+- **{{ node }}**{% if loop.first %} (default — this machine){% endif %}
+
+{% endfor %}
+When delegating to an operator, specify the `node` parameter if the user mentions a specific machine by name. Default to the local node if no machine is mentioned or implied.
+{% endif %}
+
 {% if active_tasks %}
 ## Active Tasks
 {% for task in active_tasks %}
